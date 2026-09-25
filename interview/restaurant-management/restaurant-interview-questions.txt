@@ -13,8 +13,9 @@ Status:
 Requirements and database design completed. The Restaurant JPA
 entity, BusinessType/RestaurantStatus enums, and
 RestaurantRepository are implemented. Restaurant request and
-response DTOs are also implemented. Mapping and higher
-application layers have not started.
+response DTOs and the Restaurant service layer are also
+implemented. The controller and HTTP exception mapping have
+not started.
 
 
 ============================================================
@@ -1304,3 +1305,300 @@ ownership, URL reachability/safety, and partial-update
 semantics remain deferred until their business or API
 requirements are implemented. No food-safety rules belong in
 these profile DTOs.
+
+
+============================================================
+11. SERVICE LAYER QUESTIONS
+============================================================
+
+Q1. What is the responsibility of the Service layer?
+
+Answer:
+The Service layer coordinates application use cases, applies
+business rules, defines transaction boundaries, calls
+repositories, handles expected domain/application outcomes,
+and maps between persistence entities and API-facing DTOs.
+
+
+Q2. How is a Service different from a Repository?
+
+Answer:
+A Repository focuses on persistence operations and queries.
+A Service coordinates a complete use case and must not expose
+persistence details to controllers. A service may call one or
+more repositories and enforce rules around those calls.
+
+Possible follow-up:
+Should a Repository return RestaurantResponse?
+
+Follow-up answer:
+Not in this design. The repository works with Restaurant
+entities, while the service maps them to API-facing response
+DTOs.
+
+
+Q3. Why use RestaurantService as an interface with
+RestaurantServiceImpl as its implementation?
+
+Answer:
+The interface defines the application contract independently
+of implementation details. It keeps future controllers
+dependent on an abstraction and allows the implementation to
+change without changing callers.
+
+Possible follow-up:
+Is an interface mandatory for every service?
+
+Follow-up answer:
+No. It should serve an architectural or substitution need, not
+be added mechanically. This project explicitly uses a service
+contract and implementation package structure.
+
+
+Q4. Why is RestaurantServiceImpl annotated with @Service?
+
+Answer:
+@Service marks the class as a Spring-managed service component.
+Component scanning discovers it, and Spring can apply features
+such as dependency injection and transactional proxies.
+
+
+Q5. What is constructor injection?
+
+Answer:
+Dependencies are supplied through the class constructor and
+stored in final fields. RestaurantServiceImpl receives
+RestaurantRepository this way.
+
+Possible follow-up:
+Why prefer constructor injection over field injection?
+
+Follow-up answer:
+Constructor injection makes required dependencies explicit,
+supports immutability, simplifies unit testing, and allows
+objects to be created without reflection-based field changes.
+
+
+Q6. Is @Autowired required on the constructor?
+
+Answer:
+No. When a Spring component has a single constructor, Spring
+uses it automatically. Omitting @Autowired avoids unnecessary
+annotation noise.
+
+
+Q7. What does @Transactional provide?
+
+Answer:
+Spring opens or joins a transaction around the proxied public
+method, commits it on success, and rolls it back for qualifying
+failures. It also binds persistence-context behavior to that
+transaction.
+
+
+Q8. Why is createRestaurant annotated with @Transactional?
+
+Answer:
+Creation is a write use case. Request mapping, save, entity
+lifecycle callbacks, and response mapping should operate
+within one consistent read-write transaction.
+
+
+Q9. Why does the class use
+@Transactional(readOnly = true)?
+
+Answer:
+The class-level annotation defines an appropriate default for
+get-by-publicId and get-all. It communicates that these methods
+do not intend to modify persistent state and can enable
+provider/database optimizations.
+
+Possible follow-up:
+Does readOnly = true enforce database security?
+
+Follow-up answer:
+No. It is primarily a transaction hint and framework
+configuration signal. It does not replace database
+permissions or immutable application design.
+
+
+Q10. How can createRestaurant write when the class is
+read-only?
+
+Answer:
+The method-level @Transactional annotation overrides the
+class-level transaction metadata for that method and creates a
+normal read-write transaction.
+
+
+Q11. Why are private mapping methods not annotated with
+@Transactional?
+
+Answer:
+They are in-memory transformations, not independent use cases.
+Also, Spring's proxy-based transaction interception normally
+applies to externally invoked public methods, not private
+self-invocations.
+
+
+Q12. Why does createRestaurant set
+PENDING_VERIFICATION explicitly?
+
+Answer:
+The initial lifecycle state is a server-side rule. The request
+does not contain status, and the service explicitly preserves
+that rule even though the entity also has a defensive default.
+
+
+Q13. Why does the service not generate publicId?
+
+Answer:
+The entity already owns that persistence lifecycle behavior in
+@PrePersist. Generating it again in the service would duplicate
+responsibility and could create inconsistent behavior across
+other persistence paths.
+
+
+Q14. Why map the entity returned by save() instead of the
+original entity reference?
+
+Answer:
+The repository contract returns the managed/saved result,
+which may contain persistence-generated values and lifecycle
+changes. Using that result makes the service's intent clear
+even when a provider returns the same object instance.
+
+
+Q15. How does getRestaurantByPublicId handle Optional?
+
+Answer:
+It maps the entity to RestaurantResponse when present and uses
+orElseThrow to create RestaurantNotFoundException when absent.
+This avoids null handling and makes the missing-resource
+behavior explicit.
+
+
+Q16. Why create RestaurantNotFoundException?
+
+Answer:
+It gives the service a clear, specific failure type instead of
+throwing a generic exception. A future global exception
+handler can translate it into the agreed HTTP status and error
+body.
+
+Possible follow-up:
+Why is it a RuntimeException?
+
+Follow-up answer:
+Not-found is an application failure callers handle at a
+boundary, and checked declarations would add noise across the
+service contract. Runtime exceptions also follow Spring's
+default transaction rollback behavior.
+
+
+Q17. Why was @ResponseStatus not added to
+RestaurantNotFoundException?
+
+Answer:
+The service layer should not prematurely define the HTTP
+contract. Centralized @RestControllerAdvice mapping will be
+designed with the controller/error architecture later.
+
+
+Q18. How does getAllRestaurants map its result?
+
+Answer:
+It calls findAll(), streams the entities through the same
+toResponse method used by other operations, and collects an
+unmodifiable result list using Stream.toList().
+
+Possible follow-up:
+What is the production concern with findAll()?
+
+Follow-up answer:
+It is unbounded and can consume excessive memory and database
+capacity as the table grows. Pagination and deterministic
+sorting should be introduced before production-scale use.
+
+
+Q19. Why keep mapping inside the service implementation for
+now?
+
+Answer:
+The mapping is currently small and used by one service. Private
+methods keep it consistent without introducing a premature
+mapper abstraction. A mapper component becomes useful when
+mapping is reused or substantially more complex.
+
+
+Q20. What fields must request-to-entity mapping avoid?
+
+Answer:
+It must not accept or copy internal id, publicId, client-chosen
+status, version, createdAt, or updatedAt. Those values are
+managed by persistence or server-side lifecycle rules.
+
+
+Q21. Why should business logic not be placed in a Controller?
+
+Answer:
+Controllers should translate HTTP input/output and delegate to
+application services. Putting transactions, persistence
+coordination, or business rules in controllers couples the
+logic to HTTP, makes reuse difficult, and complicates testing.
+
+
+Q22. Why was PATCH/update not implemented?
+
+Answer:
+RestaurantRequest requires complete creation/full-update data.
+A partial PATCH must distinguish an omitted field from an
+explicit null and needs a dedicated update contract or
+field-presence strategy.
+
+
+Q23. Why was status change not implemented?
+
+Answer:
+Status transitions require authorization roles, allowed
+transition rules, and audit behavior that have not yet been
+defined. Implementing it now would invent security-sensitive
+business policy.
+
+
+Q24. How would you unit test RestaurantServiceImpl?
+
+Answer:
+Mock RestaurantRepository, construct the service directly,
+verify request-to-entity values passed to save(), return a
+saved entity with generated fields, and assert complete
+response mapping. Test present and absent UUID lookups and
+multi-entity list mapping.
+
+Possible follow-up:
+Should a service unit test verify transaction behavior?
+
+Follow-up answer:
+Unit tests can inspect behavior but do not activate Spring
+transaction proxies. Transaction semantics require a Spring
+integration test.
+
+
+Q25. What self-invocation issue can occur with @Transactional?
+
+Answer:
+With standard proxy-based Spring transactions, one method
+calling another transactional method on the same instance
+bypasses the proxy, so the inner annotation may not take
+effect. Transaction boundaries should be designed around
+externally invoked public service operations.
+
+
+Q26. What would you improve before exposing getAllRestaurants
+in a production API?
+
+Answer:
+Introduce a paginated service/repository contract,
+deterministic sorting, maximum page sizes, authorization,
+appropriate response projections, and tests for query and
+mapping behavior.

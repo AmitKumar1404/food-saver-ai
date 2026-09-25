@@ -14,7 +14,7 @@ This module provides the restaurant identity that later modules can reference:
 - Customer Ordering
 - AI Agents
 
-The implemented foundation now includes the `Restaurant` JPA entity, its `BusinessType` and `RestaurantStatus` enums, `RestaurantRepository`, and separate request/response DTOs. No mapper, service, controller, endpoint, security component, or database migration has been implemented yet.
+The implemented foundation now includes the `Restaurant` JPA entity, its enums, repository, request/response DTOs, and service layer. No controller, global exception handler, security component, or database migration has been implemented yet.
 
 ### Scope boundary
 
@@ -350,8 +350,11 @@ No validation in this module should infer food safety from restaurant type, stat
 - `backend/src/main/java/com/foodsaver/repository/RestaurantRepository.java`
 - `backend/src/main/java/com/foodsaver/dto/request/RestaurantRequest.java`
 - `backend/src/main/java/com/foodsaver/dto/response/RestaurantResponse.java`
+- `backend/src/main/java/com/foodsaver/service/RestaurantService.java`
+- `backend/src/main/java/com/foodsaver/service/impl/RestaurantServiceImpl.java`
+- `backend/src/main/java/com/foodsaver/exception/RestaurantNotFoundException.java`
 
-`Restaurant` remains in `com.foodsaver.entity`, reusable enum types are kept in `com.foodsaver.enums`, persistence access is isolated in `com.foodsaver.repository`, and API-bound data shapes are separated under `com.foodsaver.dto.request` and `com.foodsaver.dto.response`. Mapping, service, controller, exception handling, security, messaging, caching, AI, and food-safety logic remain unimplemented.
+The module now follows the intended entity, enum, repository, DTO, service, service implementation, and exception package boundaries. Mapping currently remains private to the service implementation; no standalone mapper, controller, global exception handling, security, messaging, caching, AI, or food-safety logic has been introduced.
 
 ### 9.2 Core JPA mapping
 
@@ -454,7 +457,51 @@ Both DTOs are plain Lombok-backed data carriers with getters, setters, and a no-
 - Because one request DTO has required fields, it is suitable for creation or full profile updates. A future partial `PATCH` contract will need a separate update DTO or an explicit field-presence strategy; weakening required validation here would make creation unsafe.
 - Food-safety eligibility validation is not part of these DTOs.
 
-### 9.8 Remaining layers
+### 9.8 Service implementation
+
+`RestaurantService` defines three API-facing operations:
+
+```java
+RestaurantResponse createRestaurant(RestaurantRequest request);
+RestaurantResponse getRestaurantByPublicId(UUID publicId);
+List<RestaurantResponse> getAllRestaurants();
+```
+
+The interface separates the application contract from its implementation and lets a future controller depend on the service abstraction rather than persistence details.
+
+`RestaurantServiceImpl` is marked with `@Service`, implements the interface, and receives its required `RestaurantRepository` through an explicit constructor. The repository field is `final`; field injection and `@Autowired` are not used. Constructor injection makes the dependency mandatory and keeps the class straightforward to instantiate in unit tests.
+
+#### Create flow
+
+1. Map the client-controlled fields from `RestaurantRequest` to a new `Restaurant`.
+2. Explicitly set `RestaurantStatus.PENDING_VERIFICATION`.
+3. Call `RestaurantRepository.save()`.
+4. Allow the entity's `@PrePersist` callback to generate `publicId` and audit timestamps; the service does not generate them.
+5. Map the saved entity to `RestaurantResponse`.
+
+The request has no status field, so a client cannot choose the initial lifecycle state. The service also never maps internal `id` or `version` into the response.
+
+#### Get-by-publicId flow
+
+The service calls `RestaurantRepository.findByPublicId(UUID)`, maps the returned entity when present, and otherwise throws `RestaurantNotFoundException`. The exception is a minimal service-level runtime exception containing the missing public ID. HTTP status mapping and a standardized error body are deliberately deferred to the later global exception-handling step.
+
+#### Get-all flow
+
+The service calls `RestaurantRepository.findAll()`, maps each entity through the same response-mapping method, and returns a `List<RestaurantResponse>`. This meets the current phase requirement. Pagination and sorting should replace the unbounded list before this operation is used against production-scale data.
+
+#### Mapping responsibility
+
+Two private methods in `RestaurantServiceImpl` perform request-to-entity and entity-to-response mapping. Centralizing both mappings in one implementation keeps all three operations consistent while respecting the requirement not to create a mapper class yet. Mapping should move to a dedicated component only when reuse or complexity justifies it.
+
+No update mapping was added. `RestaurantRequest` has create/full-update validation and is not suitable for partial PATCH semantics. No status-transition operation was added because authorization and allowed-transition policies remain undefined.
+
+#### Transaction boundaries
+
+`RestaurantServiceImpl` uses class-level `@Transactional(readOnly = true)` as the default for the two query operations. `createRestaurant` overrides that default with method-level `@Transactional`, enabling a normal read-write transaction around entity creation, `save()`, lifecycle callbacks, and response mapping.
+
+The annotations are placed on the implementation where Spring executes the methods. They are not added blindly to private mapping helpers, which do not define independent transactional units.
+
+### 9.9 Remaining layers
 
 The remaining implementation must continue to follow the project package structure:
 
@@ -470,13 +517,15 @@ exception
 config
 ```
 
-No mapper, service, controller, exception, security, configuration, messaging, caching, or AI class was added in this step.
+No mapper, controller, global exception handler, security, configuration, messaging, caching, or AI class was added in this step.
 
 ---
 
 ## 10. Exception and Error Requirements
 
-The eventual module should integrate with centralized `@RestControllerAdvice` handling rather than duplicating `try/catch` blocks in controllers.
+`RestaurantNotFoundException` is implemented as the minimal service-level failure for a missing public ID. It extends `RuntimeException`, allowing the active transaction to follow Spring's normal rollback rules without forcing repository or interface callers to declare a checked exception.
+
+The future HTTP layer should integrate this and other application failures with centralized `@RestControllerAdvice` handling rather than duplicating `try/catch` blocks in controllers. No HTTP status annotation or global handler is added yet because the HTTP error contract remains a separate design step.
 
 Expected error categories include:
 
@@ -495,7 +544,7 @@ An error response should contain a stable machine-readable code, safe human-read
 
 ## 11. Testing and Validation
 
-No new test class was added because this step was limited to DTO implementation and documentation.
+No new test class was added because this step was limited to service implementation and documentation.
 
 Validation performed:
 
@@ -504,6 +553,7 @@ Validation performed:
 - No `pom.xml` or application configuration was changed to bypass that infrastructure requirement.
 - After adding `RestaurantRepository`, `mvn clean compile` completed successfully and compiled five source files.
 - After adding the request and response DTOs, `mvn clean compile` completed successfully and compiled seven source files.
+- After adding the service interface, implementation, and minimal not-found exception, `mvn clean compile` completed successfully and compiled ten source files.
 
 Future implementation should include:
 
