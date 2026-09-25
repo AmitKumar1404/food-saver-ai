@@ -3,106 +3,638 @@ FOODSAVER AI - RESTAURANT MANAGEMENT INTERVIEW QUESTIONS
 ============================================================
 
 Module:
-Restaurant Management
+Restaurant Management - Requirements and Database Design
 
 Purpose:
 Interview preparation from beginner to approximately
 3-year experience level.
 
+Status:
+Design completed. Java and database implementation have not
+started.
+
 
 ============================================================
-1. BASIC QUESTIONS
+1. BEGINNER QUESTIONS
 ============================================================
 
-Q1. What is an Entity in Spring Boot?
+Q1. What is the difference between a business requirement
+and a functional requirement?
 
 Answer:
-To be added after implementation.
+A business requirement explains the outcome the business
+needs, such as onboarding a restaurant. A functional
+requirement describes system behavior that supports that
+outcome, such as creating, retrieving, and updating a
+restaurant profile.
+
+Possible follow-up:
+What is a non-functional requirement?
+
+Follow-up answer:
+It defines a quality attribute or operating constraint, such
+as security, performance, reliability, or maintainability.
 
 
-Q2. Why do we use @Entity?
+Q2. Why does the proposed restaurant table have both "id"
+and "public_id"?
 
 Answer:
-To be added after implementation.
+"id" is a compact numeric primary key suited to joins and
+indexes. "public_id" is a non-sequential identifier intended
+for URLs and APIs so internal sequence values and approximate
+record counts are not exposed.
+
+Possible follow-up:
+Is a UUID itself an authorization control?
+
+Follow-up answer:
+No. An unguessable identifier reduces enumeration risk but
+does not replace authentication and resource-level
+authorization.
 
 
-Q3. What is the purpose of @Id?
+Q3. Why is postal_code stored as VARCHAR instead of a numeric
+type?
 
 Answer:
-To be added after implementation.
+Postal codes are identifiers, not quantities. They may contain
+letters, spaces, hyphens, and leading zeros, so a numeric type
+would lose valid information.
+
+
+Q4. What is a database primary key?
+
+Answer:
+A primary key uniquely identifies each row and is non-null.
+The proposed restaurants table uses a database-generated
+BIGINT "id" as its primary key.
+
+
+Q5. What is a unique constraint?
+
+Answer:
+A unique constraint prevents two rows from having the same
+value or value combination in constrained columns. It also
+protects integrity when concurrent requests pass application
+validation at the same time.
+
+
+Q6. Why are restaurant name, contact email, and contact phone
+not unique?
+
+Answer:
+Different restaurants or chain outlets can share a name, and
+multiple outlets can legitimately use one operational email
+address or telephone number. Making them globally unique would
+reject valid data.
+
+
+Q7. Why should country and currency use standard codes?
+
+Answer:
+ISO country and currency codes avoid inconsistent free-text
+values and provide stable identifiers for validation,
+integration, and reporting.
+
+
+Q8. Why use an IANA timezone such as "Asia/Kolkata" instead of
+a value such as "+05:30"?
+
+Answer:
+An IANA timezone represents regional time rules. A fixed
+offset does not model historical or future offset changes,
+including daylight-saving changes in applicable regions.
 
 
 ============================================================
 2. INTERMEDIATE QUESTIONS
 ============================================================
 
-Q1. What is the difference between Entity and DTO?
+Q1. What is the difference between nullability and uniqueness?
 
 Answer:
-To be added after implementation.
+Nullability determines whether a column may omit a value.
+Uniqueness determines whether the same non-null value or
+combination may appear in multiple rows. They enforce
+different business rules.
 
 
-Q2. Why should we avoid exposing JPA entities directly
-from REST APIs?
+Q2. Why validate data in both request DTOs and the database?
 
 Answer:
-To be added after implementation.
+DTO validation produces early, meaningful API errors. Database
+constraints remain the final integrity boundary for races,
+bugs, batch jobs, or other write paths. Neither layer makes the
+other unnecessary.
+
+
+Q3. What is optimistic locking, and why is a version column
+proposed?
+
+Answer:
+Optimistic locking detects whether another transaction changed
+a record after it was read. An update includes the expected
+version; if it no longer matches, the update fails instead of
+silently overwriting newer data.
+
+Possible follow-up:
+What HTTP response is reasonable for a stale update?
+
+Follow-up answer:
+409 Conflict is a reasonable choice when the request conflicts
+with the current resource state. The API should return a stable
+error code and let the client refresh before retrying.
+
+
+Q4. Why should enum values be stored as strings rather than
+ordinal numbers?
+
+Answer:
+Ordinal storage couples persisted data to declaration order.
+Reordering or inserting enum constants can silently change
+meaning. Stable string values are readable and safer to evolve.
+
+
+Q5. Why should created_at and updated_at use UTC?
+
+Answer:
+UTC gives one unambiguous timeline across regions. The
+restaurant's IANA timezone is used when local business time
+must be displayed or interpreted.
+
+
+Q6. Why use PATCH for a profile update?
+
+Answer:
+PATCH can represent a partial change without requiring the
+client to resend the complete profile. Its contract must
+clearly distinguish an omitted field from a field explicitly
+set to null.
+
+Possible follow-up:
+Could PUT be used?
+
+Follow-up answer:
+Yes, if the API defines complete resource replacement and
+requires all replaceable fields. Consistency of semantics is
+more important than choosing PATCH automatically.
+
+
+Q7. Why is status change separated from the general profile
+update?
+
+Answer:
+Status transitions usually have stricter authorization,
+allowed-transition rules, auditing, and side effects. A
+dedicated operation prevents mass-assignment of sensitive
+state through an ordinary profile request.
+
+
+Q8. Why should a list API always be paginated?
+
+Answer:
+Unbounded collections cause unpredictable database load,
+memory use, response size, and latency as data grows.
+Pagination creates explicit limits and stable client behavior.
+
+
+Q9. Why use a deterministic secondary sort for pagination?
+
+Answer:
+The primary sort value may not be unique. Adding a unique
+secondary key such as "id" prevents rows from changing order
+arbitrarily between pages when values tie.
+
+
+Q10. Why should JPA entities not be returned directly by REST
+controllers?
+
+Answer:
+Entities model persistence, not the public contract. Exposing
+them can leak internal fields, trigger lazy-loading problems,
+create serialization cycles, allow mass assignment, and make
+database refactoring break API clients. DTOs provide an
+intentional boundary.
+
+
+Q11. Why does the initial design keep one address on the
+restaurant table?
+
+Answer:
+The current assumption is one physical outlet and one pickup
+address per restaurant record. A separate address model would
+add complexity without a current multiple-address requirement.
+It should be revisited for billing, registered-office, or
+multiple pickup addresses.
+
+
+Q12. Why are opening hours not stored in a JSON column now?
+
+Answer:
+Real schedules can include split shifts, days of week,
+holidays, and exceptions. Adding an underspecified JSON field
+would avoid proper modeling but make validation and querying
+harder. A schedule model should be designed when requirements
+are known.
 
 
 ============================================================
 3. ADVANCED QUESTIONS
 ============================================================
 
-Q1. Why should controllers not contain business logic?
+Q1. How do you choose a composite database index?
 
 Answer:
-To be added after implementation.
+Start from an implemented query's filtering, sorting, and
+selectivity, then verify with its execution plan. Column order
+matters because a B-tree generally supports its leftmost
+prefix. Indexes should not be added merely because a column
+looks important.
+
+Possible follow-up:
+Why propose (status, id)?
+
+Follow-up answer:
+It supports filtering by status and deterministic traversal by
+id. The exact index should still be confirmed against the
+implemented query and data distribution.
 
 
-Q2. Why do we use a Service layer?
+Q2. Why is a normal latitude/longitude B-tree not enough for
+nearby search?
 
 Answer:
-To be added after implementation.
+Distance queries are spatial, not independent equality or
+simple range checks on two columns. A spatial point with an
+SRID and spatial index, or a suitable search service, is a
+better candidate once nearby-search requirements are defined.
+
+
+Q3. Why not use UUID as the table's only primary key?
+
+Answer:
+It is possible, but wide or randomly distributed UUID primary
+keys can increase clustered-index and secondary-index size and
+reduce insertion locality. A BIGINT internal key plus UUID
+public key balances database efficiency with external
+identity. Actual scale may justify a different design later.
+
+
+Q4. Why is CHAR(36) proposed for public_id instead of
+BINARY(16)?
+
+Answer:
+CHAR(36) is easier to inspect and implement in the initial
+module. BINARY(16) is more space efficient, but conversion and
+UUID ordering add complexity. Optimization should follow
+measured scale rather than being introduced prematurely.
+
+
+Q5. What race can occur if uniqueness is checked only in the
+service layer?
+
+Answer:
+Two transactions can both observe that a value is available
+and then both insert it. A database unique constraint closes
+that race. The application should translate the resulting
+constraint violation into a safe conflict response.
+
+
+Q6. Why should Hibernate ddl-auto=update not manage a
+production schema?
+
+Answer:
+Automatic updates do not provide a reviewed, repeatable,
+versioned migration history and may produce unsafe or
+environment-dependent changes. Flyway or Liquibase migrations
+make schema evolution explicit and testable.
+
+
+Q7. What is the difference between deactivation and soft
+deletion?
+
+Answer:
+Deactivation is a business lifecycle state that prevents
+normal participation while retaining the record. Soft deletion
+usually marks a row as deleted and requires every query to
+exclude it correctly. They solve related but different
+problems.
+
+
+Q8. Why are created_by and updated_by deferred?
+
+Answer:
+The system does not yet have a defined authenticated actor or
+user-to-restaurant membership model. Adding actor columns now
+would produce ambiguous nullable values. They should be added
+when their source and authorization semantics are defined.
+
+
+Q9. How should cross-field coordinate validation work?
+
+Answer:
+Latitude and longitude must either both be present or both be
+absent. Latitude must be from -90 to 90 and longitude from
+-180 to 180. This requires object-level validation in addition
+to individual field validation.
+
+
+Q10. Why is restaurant lifecycle status not a food-safety
+field?
+
+Answer:
+It controls platform participation for the restaurant account.
+It says nothing about a food batch's preparation, storage,
+handling, or eligibility. Food safety belongs to a separate
+deterministic rules module and cannot be inferred from an
+ACTIVE restaurant.
 
 
 ============================================================
-4. 3-YEAR EXPERIENCE QUESTIONS
+4. APPROXIMATELY 3-YEAR EXPERIENCE QUESTIONS
 ============================================================
 
-Q1. How would you design a production-ready Restaurant
+Q1. How would you design a production-oriented Restaurant
 Management module?
 
 Answer:
-To be added after implementation.
+Start with explicit scope and requirements. Model constrained
+restaurant data and lifecycle states, use separate internal
+and public IDs, DTOs at the API boundary, service-layer
+business rules, repositories for persistence, centralized
+errors, Bean Validation plus database constraints,
+transactions, optimistic locking, pagination, authorization,
+auditing, migrations, and unit/integration/API tests. Defer
+unconfirmed concerns rather than adding generic fields.
 
 
-Q2. What database constraints would you consider for a
-Restaurant entity?
+Q2. What database constraints would you apply to the initial
+restaurants table?
 
 Answer:
-To be added after implementation.
+A primary key on id, a unique non-null constraint on public_id,
+non-null constraints for required profile and system fields,
+bounded VARCHAR lengths, and valid persistence representations
+for status/type. Cross-field and lifecycle rules remain in the
+application, with database checks considered where portability
+and migration policy support them.
+
+
+Q3. How would you prevent lost updates to restaurant profiles?
+
+Answer:
+Use optimistic locking with a version column. Read the current
+version, include it in the update condition, increment it on
+success, and return a conflict if no row matches because
+another update committed first.
+
+
+Q4. How would you design authorization before exposing these
+APIs?
+
+Answer:
+Define users and restaurant membership/roles first. Authenticate
+the actor, authorize access to the target public_id, limit
+editable fields by role, reserve status transitions for
+authorized administration, and enforce authorization in the
+service/application boundary as well as HTTP security rules.
+
+
+Q5. How would you make restaurant search scalable?
+
+Answer:
+Require pagination and bounded page sizes, expose only
+supported filters/sorts, use deterministic ordering, add
+indexes from real query patterns, inspect execution plans,
+avoid wildcard scans where possible, and introduce dedicated
+text or geospatial search only when requirements justify it.
+
+
+Q6. How would you evolve a restaurant table without downtime?
+
+Answer:
+Use versioned migrations and an expand-and-contract approach:
+add backward-compatible nullable fields or new tables, deploy
+code that can handle both forms, backfill in controlled
+batches, switch reads/writes, then add strict constraints or
+remove obsolete fields in a later release.
+
+
+Q7. How would you protect sensitive fields in API responses?
+
+Answer:
+Use separate response DTOs or projections for administrative,
+restaurant-member, and public views. Map only allow-listed
+fields, enforce resource authorization, avoid entities in
+serialization, and test that contact and audit fields do not
+appear in public responses.
 
 
 ============================================================
-5. FOLLOW-UP QUESTIONS
+5. SCENARIO-BASED QUESTIONS
 ============================================================
 
-Follow-up questions will be added as concepts are introduced.
+Q1. Two managers edit the same restaurant. The second save
+silently removes the first manager's changes. How do you fix
+this?
 
-Each major interview question should include possible
-interviewer counter-questions.
+Answer:
+Add optimistic locking with a version field. Reject the stale
+update with 409 Conflict and require the second manager to
+reload and reconcile the current data.
+
+
+Q2. Two branches use the same contact email, and registration
+of the second branch fails. What design mistake likely caused
+this?
+
+Answer:
+The contact email was incorrectly treated as a unique account
+identifier. It is an operational contact channel and should
+not be globally unique unless a confirmed business rule says
+otherwise.
+
+
+Q3. A client submits latitude but omits longitude. What should
+happen?
+
+Answer:
+Reject the request with a field or object-level validation
+error. A partial coordinate pair cannot identify a valid
+location.
+
+
+Q4. An ACTIVE restaurant creates inventory. Can the Restaurant
+module mark its food eligible for sale?
+
+Answer:
+No. ACTIVE only means the restaurant may participate in
+platform workflows. Food eligibility requires the future
+dedicated safety and eligibility module and its deterministic
+rules.
+
+
+Q5. A restaurant asks to delete its profile, but completed
+orders reference it. What should the system do?
+
+Answer:
+Do not blindly hard-delete the row. Apply the defined
+deactivation and retention policy, preserve referential and
+audit history, and handle any legally required erasure through
+a designed anonymization/deletion process.
+
+
+Q6. Search by status becomes slow after the table grows. What
+steps should you take?
+
+Answer:
+Capture the exact query and data distribution, inspect the
+execution plan, verify pagination and sorting, then add or
+adjust an index such as (status, id) if evidence supports it.
+Measure again after the change.
+
+
+Q7. An administrator activates a restaurant directly through
+the general profile PATCH endpoint. What is wrong?
+
+Answer:
+Sensitive lifecycle state was exposed to mass assignment.
+Status changes should use a dedicated command/endpoint with
+explicit authorization, transition validation, and auditing.
+
+
+Q8. The product expands to a country without state/province
+values. What must change?
+
+Answer:
+Replace the initial universal requirement with country-aware
+address validation and migrate nullability if necessary.
+Address rules should follow supported-market requirements, not
+one country's assumptions.
 
 
 ============================================================
-6. SCENARIO-BASED QUESTIONS
+6. POSSIBLE INTERVIEWER FOLLOW-UPS
 ============================================================
 
-Scenario questions will be added after the implementation
-and API design are completed.
+Q1. Would you add a database CHECK constraint for latitude and
+longitude?
+
+Answer:
+It can provide useful defense in depth if supported reliably by
+the selected MySQL version and migration policy. Application
+validation is still needed for clear errors and cross-field
+behavior.
+
+
+Q2. Should contact_email always be converted fully to
+lowercase?
+
+Answer:
+Domain names are case-insensitive, but SMTP local-part case
+semantics are more nuanced. Define a deliberate normalization
+and lookup policy instead of changing user data without
+consideration.
+
+
+Q3. Why not put all address data into one text column?
+
+Answer:
+A single field is easy to display but difficult to validate,
+filter, normalize, and integrate with geocoding. Structured
+fields support those operations while address_line fields
+preserve human-readable detail.
+
+
+Q4. Should status be a MySQL ENUM?
+
+Answer:
+It can enforce allowed values, but it couples lifecycle changes
+to database type migrations and may be less portable. A
+VARCHAR with a stable application enum and migration-managed
+constraint is often easier to evolve. The project should make
+one explicit choice.
+
+
+Q5. Does using PATCH make an endpoint non-idempotent?
+
+Answer:
+Not necessarily. Setting fields to specified values can be
+idempotent because repeating the same request leaves the same
+state. Operations such as "increment" are not idempotent.
+
+
+Q6. Why not add indexes to every searchable field?
+
+Answer:
+Every index consumes storage and increases insert/update cost.
+Indexes can also be ignored if they do not match query
+patterns or are not selective. Add them from measured needs.
 
 
 ============================================================
 7. TRICKY QUESTIONS
 ============================================================
 
-Tricky questions will be added as the module progresses.
+Q1. If Bean Validation passes, is the data guaranteed to be
+valid?
+
+Answer:
+No. Business state may have changed, authorization may fail,
+concurrent requests may conflict, and database constraints may
+still reject the write. Validation is one layer, not the whole
+correctness model.
+
+
+Q2. Does a database unique constraint remove the need to check
+for duplicates before saving?
+
+Answer:
+No. A pre-check can improve user feedback, while the unique
+constraint closes the concurrency race. The application must
+still handle a constraint violation safely.
+
+
+Q3. Is hiding the numeric ID enough to secure a restaurant
+resource?
+
+Answer:
+No. Public UUIDs must still be protected by authentication and
+resource-level authorization. Security through identifier
+obscurity is insufficient.
+
+
+Q4. Is restaurant name a good natural primary key?
+
+Answer:
+No. Names are not guaranteed unique, can change, and may vary
+in spelling or branding. A stable surrogate key avoids
+propagating name changes through relationships.
+
+
+Q5. Does status INACTIVE mean the row should be excluded from
+every query?
+
+Answer:
+No. It should be excluded from applicable active/public
+workflows but retained for authorized history, reporting, and
+referential integrity. Query behavior depends on use case.
+
+
+Q6. Can an ACTIVE restaurant automatically publish surplus
+food offers?
+
+Answer:
+No. Restaurant activation is only one platform prerequisite.
+Future inventory, availability, authorization, and deterministic
+food-eligibility checks must independently pass.
+
+
+Q7. Is CHAR(36) always the best UUID storage type?
+
+Answer:
+No. It is an initial clarity trade-off. BINARY(16) is smaller
+and can improve index efficiency, while ordered UUID strategies
+can improve locality. The best choice depends on scale,
+database support, and operational complexity.
