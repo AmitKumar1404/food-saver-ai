@@ -1,0 +1,214 @@
+# FoodSaver AI - Project Development Rules
+
+## Project Context
+
+This is FoodSaver AI, an Agentic AI powered surplus food
+management platform.
+
+The project is being developed as a production-oriented
+Spring Boot application.
+
+Technology stack:
+
+- Java 21
+- Spring Boot 4.1.1
+- Maven
+- MySQL
+- Spring Data JPA
+- Bean Validation
+- Lombok
+- Spring Boot Actuator
+
+Backend location:
+
+backend/
+
+## Development Philosophy
+
+Do not generate the entire feature at once unless explicitly
+requested.
+
+Implement features incrementally in small, reviewable steps.
+
+Prefer production-oriented design over simplistic demo code.
+
+Explain important architectural and design decisions through
+documentation.
+
+Do not introduce unnecessary dependencies.
+
+Do not change existing configuration or architecture without
+explaining why the change is required.
+
+## Layered Architecture
+
+Follow this structure:
+
+controller
+service
+service.impl
+repository
+entity
+dto.request
+dto.response
+exception
+config
+
+Controllers should handle HTTP concerns.
+
+Services should contain business logic.
+
+Repositories should handle persistence.
+
+Entities should represent database persistence models.
+
+DTOs should be used for API request/response boundaries.
+
+Do not expose JPA entities directly from APIs unless explicitly
+requested and justified.
+
+## Validation
+
+Use Jakarta Bean Validation where appropriate.
+
+Validate incoming request DTOs.
+
+Do not rely only on database constraints for API validation.
+
+Validation messages should be meaningful.
+
+## Exception Handling
+
+Prefer centralized exception handling using
+@RestControllerAdvice.
+
+Do not put repetitive try/catch blocks in every controller.
+
+Use meaningful custom exceptions where appropriate.
+
+## Database
+
+Use JPA/Hibernate.
+
+Use appropriate primary keys, constraints, indexes and
+relationships.
+
+Consider production implications of database design.
+
+Avoid unnecessary bidirectional relationships.
+
+## API Design
+
+Use appropriate HTTP methods and status codes.
+
+Keep endpoint naming REST-oriented.
+
+Use ResponseEntity where it adds value.
+
+Do not return unnecessary implementation details.
+
+## Documentation Requirement
+
+For every meaningful implementation step, update:
+
+docs/restaurant-management/restaurant-management.md
+
+The documentation should explain:
+
+1. What was implemented
+2. Why it was implemented
+3. How it works
+4. Important annotations
+5. Design decisions
+6. Alternatives considered
+7. Production considerations
+8. Testing performed
+9. Common mistakes
+10. Interview concepts
+
+Do not merely copy source code into the documentation.
+
+Explain the reasoning behind the code.
+
+## Interview Preparation Requirement
+
+Maintain:
+
+interview/restaurant-management/restaurant-interview-questions.txt
+
+For every important concept introduced in the module, add
+interview questions.
+
+Include:
+
+- Beginner questions
+- Intermediate questions
+- Advanced questions
+- 3-year-experience questions
+- Scenario-based questions
+- Possible interviewer follow-up questions
+- Tricky questions
+
+Each question should include a concise but technically
+accurate answer.
+
+When a concept has multiple likely follow-up questions,
+include those follow-ups.
+
+## Code Quality
+
+Prefer:
+
+- Constructor injection
+- Meaningful names
+- Small focused methods
+- Proper separation of concerns
+- Consistent package structure
+- Clean exception handling
+- Validation
+- Appropriate logging
+
+Avoid:
+
+- Field injection
+- Business logic inside controllers
+- Direct repository access from controllers
+- Hard-coded credentials
+- Magic values where configuration is appropriate
+- Unnecessary abstraction
+
+## Food Safety Rule
+
+FoodSaver AI deals with food surplus.
+
+Never design AI logic as the final authority for food safety.
+
+Hard safety/eligibility rules must not be bypassed by an AI
+agent.
+
+AI may recommend or coordinate actions, but deterministic
+business rules and appropriate human/qualified oversight must
+remain authoritative where required.
+
+Surplus food must never automatically be treated as unsafe,
+and unsafe food must never automatically be treated as
+eligible for sale.
+
+## Cursor Behavior
+
+Before making significant code changes:
+
+1. Inspect relevant existing code.
+2. Understand current architecture.
+3. Identify files that need modification.
+4. Make the smallest appropriate change.
+5. Explain important changes.
+6. Update relevant documentation.
+7. Update interview questions.
+
+Do not modify unrelated files.
+
+Do not silently change existing configuration.
+
+When requirements are ambiguous, prefer asking for clarification
+rather than inventing business rules.

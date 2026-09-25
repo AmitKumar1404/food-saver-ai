@@ -1,0 +1,108 @@
+============================================================
+FOODSAVER AI - RESTAURANT MANAGEMENT INTERVIEW QUESTIONS
+============================================================
+
+Module:
+Restaurant Management
+
+Purpose:
+Interview preparation from beginner to approximately
+3-year experience level.
+
+
+============================================================
+1. BASIC QUESTIONS
+============================================================
+
+Q1. What is an Entity in Spring Boot?
+
+Answer:
+To be added after implementation.
+
+
+Q2. Why do we use @Entity?
+
+Answer:
+To be added after implementation.
+
+
+Q3. What is the purpose of @Id?
+
+Answer:
+To be added after implementation.
+
+
+============================================================
+2. INTERMEDIATE QUESTIONS
+============================================================
+
+Q1. What is the difference between Entity and DTO?
+
+Answer:
+To be added after implementation.
+
+
+Q2. Why should we avoid exposing JPA entities directly
+from REST APIs?
+
+Answer:
+To be added after implementation.
+
+
+============================================================
+3. ADVANCED QUESTIONS
+============================================================
+
+Q1. Why should controllers not contain business logic?
+
+Answer:
+To be added after implementation.
+
+
+Q2. Why do we use a Service layer?
+
+Answer:
+To be added after implementation.
+
+
+============================================================
+4. 3-YEAR EXPERIENCE QUESTIONS
+============================================================
+
+Q1. How would you design a production-ready Restaurant
+Management module?
+
+Answer:
+To be added after implementation.
+
+
+Q2. What database constraints would you consider for a
+Restaurant entity?
+
+Answer:
+To be added after implementation.
+
+
+============================================================
+5. FOLLOW-UP QUESTIONS
+============================================================
+
+Follow-up questions will be added as concepts are introduced.
+
+Each major interview question should include possible
+interviewer counter-questions.
+
+
+============================================================
+6. SCENARIO-BASED QUESTIONS
+============================================================
+
+Scenario questions will be added after the implementation
+and API design are completed.
+
+
+============================================================
+7. TRICKY QUESTIONS
+============================================================
+
+Tricky questions will be added as the module progresses.
