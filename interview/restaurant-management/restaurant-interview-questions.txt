@@ -10,8 +10,9 @@ Interview preparation from beginner to approximately
 3-year experience level.
 
 Status:
-Design completed. Java and database implementation have not
-started.
+Requirements and database design completed. The Restaurant JPA
+entity and BusinessType/RestaurantStatus enums are implemented.
+Repository and higher application layers have not started.
 
 
 ============================================================
@@ -638,3 +639,254 @@ No. It is an initial clarity trade-off. BINARY(16) is smaller
 and can improve index efficiency, while ordered UUID strategies
 can improve locality. The best choice depends on scale,
 database support, and operational complexity.
+
+
+============================================================
+8. ENTITY IMPLEMENTATION QUESTIONS
+============================================================
+
+Q1. What does @Entity do?
+
+Answer:
+@Entity marks a Java class as a JPA persistent entity. The JPA
+provider includes it in the persistence metamodel and can map
+its instances to database rows.
+
+Possible follow-up:
+Does @Entity define the database table name?
+
+Follow-up answer:
+Not by itself. Without @Table, the provider applies its naming
+strategy. FoodSaver uses @Table(name = "restaurants") to make
+the mapping explicit.
+
+
+Q2. Why is @Table used on Restaurant?
+
+Answer:
+It explicitly maps the class to "restaurants" and provides a
+place to declare the named public-ID unique constraint and
+composite indexes. This avoids relying on implicit naming.
+
+
+Q3. What does @Id mean?
+
+Answer:
+@Id identifies the entity's primary-key attribute. Because
+annotations are placed on fields in Restaurant, JPA uses field
+access for persistence.
+
+Possible follow-up:
+Why is id a Long instead of long?
+
+Follow-up answer:
+Long can be null before the entity is persisted, which clearly
+represents that the database-generated identity has not yet
+been assigned.
+
+
+Q4. What does @GeneratedValue(strategy =
+GenerationType.IDENTITY) do?
+
+Answer:
+It tells JPA that the database generates the primary-key value
+during insert, typically using MySQL AUTO_INCREMENT. Hibernate
+retrieves that generated value and assigns it to the entity.
+
+Possible follow-up:
+What trade-off does IDENTITY have?
+
+Follow-up answer:
+The identifier is not available before insert, and identity
+generation can limit some insert-batching strategies. It is
+still a simple, appropriate choice for the current MySQL
+design.
+
+
+Q5. Why does Restaurant use a UUID publicId in addition to its
+Long primary key?
+
+Answer:
+The Long key is efficient for internal joins. The UUID is a
+stable non-sequential external identifier that avoids exposing
+the database sequence through future API URLs and responses.
+It is not a substitute for authorization.
+
+
+Q6. How is publicId generated?
+
+Answer:
+The @PrePersist callback assigns UUID.randomUUID() when
+publicId is null. The field is non-null, non-updatable, and
+protected from a generated setter. The database unique
+constraint handles the extremely unlikely collision and any
+concurrent integrity race.
+
+
+Q7. Why does publicId use @JdbcTypeCode(SqlTypes.CHAR)?
+
+Answer:
+UUID JDBC mappings can vary by database and Hibernate dialect.
+The annotation explicitly selects character storage so the
+Java UUID follows the approved readable CHAR(36) database
+design instead of an implicit binary mapping.
+
+Possible follow-up:
+Is @JdbcTypeCode part of standard JPA?
+
+Follow-up answer:
+No. It is Hibernate-specific. That provider coupling is
+deliberate for this MySQL/Hibernate project and should be
+covered by a database-backed mapping test.
+
+
+Q8. Why use @Enumerated(EnumType.STRING)?
+
+Answer:
+It persists enum constant names such as ACTIVE and BAKERY.
+These values are readable and remain stable if constants are
+reordered. EnumType.ORDINAL would store positions, so
+reordering constants could silently corrupt their meaning.
+
+Possible follow-up:
+Can a STRING enum constant be renamed safely?
+
+Follow-up answer:
+Not automatically. Existing rows contain the old text, so a
+rename requires a deliberate schema/data migration or a more
+explicit persistence mapping.
+
+
+Q9. What does @Version do?
+
+Answer:
+@Version enables optimistic locking. Hibernate includes the
+current version in update/delete conditions and increments it
+after successful changes. A stale transaction then fails
+instead of overwriting a newer update.
+
+Possible follow-up:
+Does @Version lock the database row when it is read?
+
+Follow-up answer:
+No. Optimistic locking normally detects the conflict at write
+time without holding a pessimistic row lock throughout the
+transaction.
+
+
+Q10. Why are createdAt and updatedAt represented by Instant?
+
+Answer:
+Instant represents an unambiguous point on the UTC timeline.
+It is appropriate for audit events independent of the
+restaurant's local timezone. Local display and business-time
+interpretation can use the restaurant's IANA timezone later.
+
+
+Q11. How are audit timestamps populated without Spring Data
+auditing?
+
+Answer:
+@PrePersist sets createdAt and updatedAt immediately before an
+insert. @PreUpdate refreshes updatedAt immediately before an
+update. This keeps the first step self-contained and avoids
+adding auditing configuration before actor auditing is
+designed.
+
+Possible follow-up:
+What is a limitation of application-generated timestamps?
+
+Follow-up answer:
+They use the application server's clock. Production systems
+need clock synchronization and a defined JDBC/database
+timezone. Database defaults are an alternative but must be
+mapped and tested consistently.
+
+
+Q12. Why is BigDecimal used for latitude and longitude?
+
+Answer:
+BigDecimal preserves the declared DECIMAL(9,6) representation
+without binary floating-point rounding behavior. It also maps
+directly to the intended fixed-precision database columns.
+
+Possible follow-up:
+Does BigDecimal enforce valid coordinate ranges?
+
+Follow-up answer:
+No. Precision and scale control numeric storage shape, not the
+-90/90 or -180/180 business ranges. Range and paired-field
+validation will be implemented separately.
+
+
+Q13. What do @Column(nullable = false) and length provide?
+
+Answer:
+They describe schema-level nullability and string-size mapping
+to the JPA provider. They do not replace request validation;
+future DTOs still need meaningful Bean Validation constraints
+and messages.
+
+
+Q14. Why are explicit snake_case column names used?
+
+Answer:
+Explicit names such as "contact_email" make the Java-to-SQL
+contract clear and stable instead of depending on a naming
+strategy that could change between configurations.
+
+
+Q15. Why are setters suppressed for id, publicId, version, and
+audit timestamps?
+
+Answer:
+Those fields are managed by the database, JPA provider, or
+entity lifecycle callbacks. Removing ordinary setters reduces
+accidental application changes and communicates ownership of
+the values.
+
+
+Q16. Why was Lombok @Data not used on Restaurant?
+
+Answer:
+@Data would generate equals, hashCode, toString, getters, and
+setters for all fields. Entity equality is subtle, mutable
+fields make poor hash keys, and future relationships can cause
+lazy loading or recursion in toString. Focused Lombok
+annotations are safer.
+
+
+Q17. Why does a JPA entity need a no-argument constructor?
+
+Answer:
+The JPA provider needs a public or protected no-argument
+constructor to instantiate the entity reflectively. The
+implemented @NoArgsConstructor supplies it using the Lombok
+dependency already present in the project.
+
+
+Q18. Are @Column constraints sufficient input validation?
+
+Answer:
+No. They help define persistence integrity, but API requests
+need DTO-level validation for early and understandable errors.
+Cross-field rules such as paired coordinates also need
+application validation.
+
+
+Q19. What happens if the application adds a new enum constant?
+
+Answer:
+The Java mapping accepts it, but the complete system must also
+review migrations, database constraints if any, API contracts,
+business transitions, tests, and compatibility with existing
+consumers. Adding a constant is not only a code change.
+
+
+Q20. Does this Restaurant entity implement food-safety logic?
+
+Answer:
+No. RestaurantStatus describes platform lifecycle only. The
+entity contains no food-safety status, selling window, or
+eligibility decision. Those deterministic rules belong to a
+later dedicated module.

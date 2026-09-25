@@ -14,7 +14,7 @@ This module provides the restaurant identity that later modules can reference:
 - Customer Ordering
 - AI Agents
 
-This document is a design specification. No Restaurant entity, repository, DTO, service, controller, endpoint, or database migration has been implemented yet.
+The first persistence component is now implemented: the `Restaurant` JPA entity and its `BusinessType` and `RestaurantStatus` enums. No repository, DTO, service, controller, endpoint, security component, or database migration has been implemented yet.
 
 ### Scope boundary
 
@@ -166,7 +166,7 @@ No arbitrary uptime or latency SLA is assumed at this stage. Such targets requir
 
 ---
 
-## 6. Proposed Database Design
+## 6. Database and Entity Mapping
 
 ### 6.1 Suggested table name
 
@@ -176,7 +176,7 @@ The plural snake-case name is clear, conventional for SQL, and does not conflict
 
 ### 6.2 Proposed fields
 
-This is the proposed initial table, not an implemented schema.
+The following design is mapped by the implemented `Restaurant` entity. It is not yet managed by a versioned database migration; the current development configuration still relies on Hibernate schema update.
 
 | Column | MySQL type | Intended Java type | Required | Default | Purpose and decision |
 | --- | --- | --- | --- | --- | --- |
@@ -246,7 +246,7 @@ A normal composite B-tree on latitude/longitude is not a substitute for geospati
 
 ### 6.6 Lifecycle model
 
-Proposed states:
+The implemented `RestaurantStatus` values are:
 
 - `PENDING_VERIFICATION`: profile exists but is not approved for normal platform activity.
 - `ACTIVE`: restaurant may participate in authorized platform workflows.
@@ -255,11 +255,11 @@ Proposed states:
 
 Allowed transitions must be defined in service-layer policy rather than inferred from enum order. This status does not indicate whether any food item is safe, unsafe, surplus, or eligible.
 
-### 6.7 Concurrency and audit decisions
+### 6.7 Concurrency and audit implementation
 
-`version` will support optimistic locking so two simultaneous profile updates do not silently overwrite each other. A stale update should return a conflict response rather than lose data.
+`version` is annotated with `@Version`, enabling Hibernate optimistic locking so two simultaneous profile updates do not silently overwrite each other. A future service/API layer should translate a stale update into a conflict response rather than lose data.
 
-`created_at` and `updated_at` provide basic record timestamps. Actor-based fields such as `created_by` and `updated_by` are deferred until user identity and authorization are designed; adding them now without a valid actor model would create misleading nullable data.
+`createdAt` and `updatedAt` use `Instant`. A `@PrePersist` callback initializes both timestamps immediately before the first insert, and a `@PreUpdate` callback refreshes `updatedAt` before an update. `created_at` is non-updatable. Actor-based fields such as `created_by` and `updated_by` are deferred until user identity and authorization are designed; adding them now without a valid actor model would create misleading nullable data.
 
 ---
 
@@ -340,11 +340,71 @@ No validation in this module should infer food safety from restaurant type, stat
 
 ---
 
-## 9. Entity, Repository, DTO, Service, and Controller
+## 9. Entity and Enums
 
-Not implemented. Their design will be handled in separate incremental steps after this requirements document is approved.
+### 9.1 Implemented files
 
-Implementation must follow the project package structure:
+- `backend/src/main/java/com/foodsaver/entity/Restaurant.java`
+- `backend/src/main/java/com/foodsaver/enums/BusinessType.java`
+- `backend/src/main/java/com/foodsaver/enums/RestaurantStatus.java`
+
+`Restaurant` remains in `com.foodsaver.entity`, while the reusable enum types are kept separately in `com.foodsaver.enums`. Repository, DTO, service, controller, exception handling, security, messaging, caching, AI, and food-safety logic remain unimplemented.
+
+### 9.2 Core JPA mapping
+
+- `@Entity` marks `Restaurant` as a JPA-managed persistent type.
+- `@Table(name = "restaurants")` maps it to the approved table name and declares the named public-ID unique constraint and approved indexes.
+- `@Id` identifies the internal `Long id` primary key.
+- `@GeneratedValue(strategy = GenerationType.IDENTITY)` delegates internal ID generation to the MySQL identity/auto-increment mechanism.
+- The internal ID has no Lombok-generated setter and is not intended to become an external API identifier.
+- `publicId` is a non-null, non-updatable `UUID` populated in `@PrePersist` with `UUID.randomUUID()`.
+- `@JdbcTypeCode(SqlTypes.CHAR)` makes the Hibernate/MySQL mapping follow the approved readable `CHAR(36)` UUID representation rather than a provider-default binary UUID mapping.
+- The named `uk_restaurants_public_id` table constraint guarantees public identifier uniqueness.
+
+### 9.3 Field and enum mapping
+
+All approved profile fields are mapped from Java camelCase names to explicit snake_case columns with the documented nullability and lengths. Optional fields omit `nullable = false`. `latitude` and `longitude` use nullable `BigDecimal` values with precision `9` and scale `6`; cross-field coordinate validation is intentionally deferred to a later validation step.
+
+`BusinessType` implements:
+
+```text
+RESTAURANT
+BAKERY
+SWEET_SHOP
+CAFE
+OTHER
+```
+
+`RestaurantStatus` implements:
+
+```text
+PENDING_VERIFICATION
+ACTIVE
+SUSPENDED
+INACTIVE
+```
+
+Both enum fields use `@Enumerated(EnumType.STRING)`. Persisted values therefore remain readable and do not depend on declaration order. Renaming a persisted enum constant would still require a deliberate data migration.
+
+### 9.4 Lifecycle callbacks
+
+The `@PrePersist` callback:
+
+1. Generates `publicId` if it has not already been generated.
+2. Restores the server-controlled default `PENDING_VERIFICATION` status if status is null.
+3. Sets `createdAt` and `updatedAt` from one `Instant.now()` value.
+
+The `@PreUpdate` callback refreshes only `updatedAt`. These callbacks provide entity-level timestamp generation without enabling additional Spring Data auditing configuration. A production deployment should still define a consistent JDBC/database timezone and verify the physical timestamp type through migrations.
+
+### 9.5 Lombok decision
+
+The project already includes Lombok. `@Getter`, `@Setter`, and `@NoArgsConstructor` reduce repetitive entity code without introducing a dependency. Setters are suppressed for `id`, `publicId`, `version`, `createdAt`, and `updatedAt` because these fields are persistence- or lifecycle-managed.
+
+`@Data`, generated `equals/hashCode`, builders, and all-arguments constructors were intentionally avoided. Entity identity and equality require a deliberate policy, and including mutable fields or lazy relationships in equality later can create persistence bugs.
+
+### 9.6 Remaining layers
+
+The remaining implementation must continue to follow the project package structure:
 
 ```text
 controller
@@ -357,6 +417,8 @@ dto.response
 exception
 config
 ```
+
+No class from those layers was added in this step.
 
 ---
 
@@ -379,9 +441,17 @@ An error response should contain a stable machine-readable code, safe human-read
 
 ---
 
-## 11. Testing Requirements
+## 11. Testing and Validation
 
-No tests were added in this design-only step. Future implementation should include:
+No new test class was added because this step was limited to the entity and enums.
+
+Validation performed:
+
+- `mvn -DskipTests compile` completed successfully.
+- `mvn clean test` compiled the application and tests, then the existing `FoodSaverApplicationTests.contextLoads` test failed while creating the JPA context because a usable MySQL connection/JDBC metadata was not available in the execution environment.
+- No `pom.xml` or application configuration was changed to bypass that infrastructure requirement.
+
+Future implementation should include:
 
 - Unit tests for profile rules, normalization, and lifecycle transitions.
 - Validation tests for boundaries, nullability, malformed values, and cross-field coordinates.
@@ -406,6 +476,7 @@ No tests were added in this design-only step. Future implementation should inclu
 - Add structured audit events for status changes when actor identity exists.
 - Measure query plans before adding more indexes.
 - Revisit `CHAR(36)` UUID storage only when actual scale and operational evidence justify binary conversion.
+- Keep the Hibernate-specific `@JdbcTypeCode` mapping covered by persistence tests when database-backed tests are introduced.
 
 ---
 
@@ -497,3 +568,8 @@ JSON would make initial storage easy but complicate validation and querying. A n
 - Lifecycle state machines
 - Validation at API and database boundaries
 - Module boundaries and separation of food-safety eligibility
+- JPA entity and table mapping
+- Identity generation and public UUIDs
+- String enum persistence
+- JPA lifecycle callbacks
+- Instant and decimal coordinate persistence
