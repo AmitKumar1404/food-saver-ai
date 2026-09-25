@@ -11,8 +11,9 @@ Interview preparation from beginner to approximately
 
 Status:
 Requirements and database design completed. The Restaurant JPA
-entity and BusinessType/RestaurantStatus enums are implemented.
-Repository and higher application layers have not started.
+entity, BusinessType/RestaurantStatus enums, and
+RestaurantRepository are implemented. Higher application
+layers have not started.
 
 
 ============================================================
@@ -890,3 +891,177 @@ No. RestaurantStatus describes platform lifecycle only. The
 entity contains no food-safety status, selling window, or
 eligibility decision. Those deterministic rules belong to a
 later dedicated module.
+
+
+============================================================
+9. REPOSITORY LAYER QUESTIONS
+============================================================
+
+Q1. What is the responsibility of a repository in the layered
+architecture?
+
+Answer:
+A repository provides persistence access for entities and
+keeps database interaction out of controllers and business
+services. Business decisions remain in the service layer; the
+repository focuses on retrieving and storing persistent data.
+
+
+Q2. Why does RestaurantRepository extend
+JpaRepository<Restaurant, Long>?
+
+Answer:
+Restaurant is the managed entity type, and Long is the type of
+the field annotated with @Id. JpaRepository's second generic
+parameter must match the JPA primary-key type, not another
+unique field.
+
+Possible follow-up:
+Why is UUID not the JpaRepository ID type?
+
+Follow-up answer:
+publicId is unique and used for external lookup, but it is not
+the entity field annotated with @Id. The internal primary key
+is Long id, so the repository ID type is Long.
+
+
+Q3. What does JpaRepository provide?
+
+Answer:
+It provides standard CRUD, pagination, sorting, flushing, and
+batch-oriented persistence operations built on Spring Data
+JPA. Spring creates the repository implementation proxy at
+runtime.
+
+Possible follow-up:
+Why not declare save(), findById(), and deleteById() again?
+
+Follow-up answer:
+They are already inherited. Redeclaring them without changing
+their contract adds noise and maintenance cost.
+
+
+Q4. How does Spring Data derive the query for
+findByPublicId(UUID publicId)?
+
+Answer:
+Spring Data parses the method name. "findBy" introduces the
+query predicate, and "PublicId" resolves to the publicId Java
+property on Restaurant. It then creates the appropriate JPA
+query without custom SQL or JPQL.
+
+Possible follow-up:
+Does the method name use public_id from the database?
+
+Follow-up answer:
+No. Derived query names use Java entity property names.
+Hibernate maps Restaurant.publicId to the public_id column.
+
+
+Q5. Why does findByPublicId return Optional<Restaurant>?
+
+Answer:
+A lookup can legitimately find no restaurant. Optional makes
+that absence explicit and avoids returning null as the normal
+repository contract.
+
+Possible follow-up:
+Why not return List<Restaurant>?
+
+Follow-up answer:
+public_id has a database unique constraint, so at most one row
+should match. A list would weaken that cardinality guarantee in
+the method contract.
+
+
+Q6. Why does findByPublicId accept UUID rather than String?
+
+Answer:
+The Restaurant.publicId property is typed as UUID. Using UUID
+preserves type safety and lets framework conversion happen at
+the API boundary later instead of passing unvalidated strings
+through the persistence layer.
+
+
+Q7. Is @Repository required on RestaurantRepository?
+
+Answer:
+No. Spring Data discovers repository interfaces in the
+application's package tree and creates a managed proxy. Adding
+@Repository is unnecessary for this interface, although the
+generated repository still participates in Spring persistence
+exception translation.
+
+
+Q8. Why was no @Query annotation added?
+
+Answer:
+The required equality lookup follows Spring Data's supported
+method-name convention and directly matches an entity
+property. A custom query would duplicate framework behavior
+and add maintenance without solving a real limitation.
+
+
+Q9. When would a custom JPQL or native SQL query be justified?
+
+Answer:
+It may be justified for a query that cannot be expressed
+clearly through derived methods, needs a specific projection,
+uses complex joins or aggregation, or requires a
+database-specific feature. The choice should be driven by an
+actual requirement and tested behavior.
+
+
+Q10. Does successful Java compilation prove that a derived
+query is valid?
+
+Answer:
+Compilation proves the interface and types are valid Java.
+Spring Data validates and creates derived queries when the
+application context initializes. A focused repository
+integration test should ultimately verify query creation and
+database behavior.
+
+Possible follow-up:
+Why is findByPublicId still considered valid here?
+
+Follow-up answer:
+Restaurant has an accessible persistent field named publicId
+of type UUID, and findByPublicId follows Spring Data's standard
+property-expression grammar exactly.
+
+
+Q11. Should controllers call RestaurantRepository directly?
+
+Answer:
+No. The project architecture requires controllers to call
+services. Services own authorization and business workflows,
+while repositories remain persistence-focused.
+
+
+Q12. Does findByPublicId make publicId the primary key?
+
+Answer:
+No. It is a query against a separate unique field. JpaRepository
+operations such as findById still use the internal Long primary
+key.
+
+
+Q13. What happens if duplicate public IDs somehow exist?
+
+Answer:
+The named database unique constraint should prevent that state.
+If inconsistent legacy data existed, a single-result query
+could fail because more than one row matched. Database
+constraints and migration checks are therefore still essential.
+
+
+Q14. How would you test RestaurantRepository?
+
+Answer:
+Use a focused JPA integration test with a test database:
+persist a Restaurant, query by its UUID, verify the matching
+entity, verify an unknown UUID returns Optional.empty(), and
+verify the public-ID unique constraint. The test database
+should reproduce relevant MySQL mapping behavior, especially
+the CHAR(36) UUID mapping.

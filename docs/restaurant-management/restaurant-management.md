@@ -14,7 +14,7 @@ This module provides the restaurant identity that later modules can reference:
 - Customer Ordering
 - AI Agents
 
-The first persistence component is now implemented: the `Restaurant` JPA entity and its `BusinessType` and `RestaurantStatus` enums. No repository, DTO, service, controller, endpoint, security component, or database migration has been implemented yet.
+The persistence foundation now includes the `Restaurant` JPA entity, its `BusinessType` and `RestaurantStatus` enums, and `RestaurantRepository`. No DTO, service, controller, endpoint, security component, or database migration has been implemented yet.
 
 ### Scope boundary
 
@@ -347,8 +347,9 @@ No validation in this module should infer food safety from restaurant type, stat
 - `backend/src/main/java/com/foodsaver/entity/Restaurant.java`
 - `backend/src/main/java/com/foodsaver/enums/BusinessType.java`
 - `backend/src/main/java/com/foodsaver/enums/RestaurantStatus.java`
+- `backend/src/main/java/com/foodsaver/repository/RestaurantRepository.java`
 
-`Restaurant` remains in `com.foodsaver.entity`, while the reusable enum types are kept separately in `com.foodsaver.enums`. Repository, DTO, service, controller, exception handling, security, messaging, caching, AI, and food-safety logic remain unimplemented.
+`Restaurant` remains in `com.foodsaver.entity`, the reusable enum types are kept separately in `com.foodsaver.enums`, and persistence access is isolated in `com.foodsaver.repository`. DTO, service, controller, exception handling, security, messaging, caching, AI, and food-safety logic remain unimplemented.
 
 ### 9.2 Core JPA mapping
 
@@ -402,7 +403,26 @@ The project already includes Lombok. `@Getter`, `@Setter`, and `@NoArgsConstruct
 
 `@Data`, generated `equals/hashCode`, builders, and all-arguments constructors were intentionally avoided. Entity identity and equality require a deliberate policy, and including mutable fields or lazy relationships in equality later can create persistence bugs.
 
-### 9.6 Remaining layers
+### 9.6 Repository implementation
+
+`RestaurantRepository` extends `JpaRepository<Restaurant, Long>`.
+
+- `Restaurant` is the managed entity type.
+- `Long` is the repository ID type because the field annotated with `@Id` is the internal `Long id`. Repository generic parameters follow the JPA primary key, not the separate public identifier.
+- Extending `JpaRepository` provides the standard persistence operations needed by future services without writing a repository implementation manually.
+- No `@Repository` annotation is necessary on this interface. Spring Data discovers repository interfaces under the application package and creates a proxy; repository exceptions are handled through Spring's persistence exception translation infrastructure.
+
+The only application-specific method added is:
+
+```java
+Optional<Restaurant> findByPublicId(UUID publicId);
+```
+
+Spring Data parses `findByPublicId` as a derived query: `findBy` is the query subject and `PublicId` resolves to the existing `Restaurant.publicId` Java property. The property type is `UUID`, so the method parameter also uses `UUID`. The method returns `Optional<Restaurant>` because a lookup may find no row, while the database unique constraint guarantees that at most one row can match.
+
+The method uses the Java entity property name, not the physical `public_id` column name. No SQL, JPQL, `@Query`, or unnecessary repository operation was added.
+
+### 9.7 Remaining layers
 
 The remaining implementation must continue to follow the project package structure:
 
@@ -418,7 +438,7 @@ exception
 config
 ```
 
-No class from those layers was added in this step.
+No DTO, service, controller, exception, security, configuration, messaging, caching, or AI class was added in this step.
 
 ---
 
@@ -450,6 +470,7 @@ Validation performed:
 - `mvn -DskipTests compile` completed successfully.
 - `mvn clean test` compiled the application and tests, then the existing `FoodSaverApplicationTests.contextLoads` test failed while creating the JPA context because a usable MySQL connection/JDBC metadata was not available in the execution environment.
 - No `pom.xml` or application configuration was changed to bypass that infrastructure requirement.
+- After adding `RestaurantRepository`, `mvn clean compile` completed successfully and compiled five source files.
 
 Future implementation should include:
 
