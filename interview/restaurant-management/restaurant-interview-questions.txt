@@ -12,8 +12,9 @@ Interview preparation from beginner to approximately
 Status:
 Requirements and database design completed. The Restaurant JPA
 entity, BusinessType/RestaurantStatus enums, and
-RestaurantRepository are implemented. Higher application
-layers have not started.
+RestaurantRepository are implemented. Restaurant request and
+response DTOs are also implemented. Mapping and higher
+application layers have not started.
 
 
 ============================================================
@@ -1065,3 +1066,241 @@ entity, verify an unknown UUID returns Optional.empty(), and
 verify the public-ID unique constraint. The test database
 should reproduce relevant MySQL mapping behavior, especially
 the CHAR(36) UUID mapping.
+
+
+============================================================
+10. DTO AND BEAN VALIDATION QUESTIONS
+============================================================
+
+Q1. What is a DTO?
+
+Answer:
+A Data Transfer Object defines data crossing an application
+boundary. It lets an API accept and return intentional fields
+without exposing the persistence entity or coupling clients to
+the database model.
+
+
+Q2. Why are RestaurantRequest and RestaurantResponse separate?
+
+Answer:
+Requests contain client-controlled input and validation rules.
+Responses contain server-approved output, including generated
+values such as publicId, status, and audit timestamps. Separate
+types prevent accidental mass assignment and data exposure.
+
+Possible follow-up:
+Why not reuse RestaurantRequest as the response?
+
+Follow-up answer:
+It would omit useful server-managed output and blur which
+fields clients are permitted to control.
+
+
+Q3. Why does RestaurantRequest exclude id, publicId, status,
+version, createdAt, and updatedAt?
+
+Answer:
+Those fields are generated or controlled by the database,
+entity lifecycle, or future business workflows. Accepting them
+from clients would permit identity, lifecycle, audit, or
+concurrency-state manipulation.
+
+
+Q4. Why does RestaurantResponse exclude the internal id?
+
+Answer:
+Future APIs should identify restaurants by publicId. Exposing
+the sequential database key would leak an internal
+implementation detail and encourage clients to depend on it.
+
+
+Q5. Why is version excluded from RestaurantResponse?
+
+Answer:
+No API-level concurrency contract has been implemented yet.
+Exposing version without defining conditional updates, ETags,
+or conflict handling would publish an unsupported contract.
+
+Possible follow-up:
+When could exposing a version be appropriate?
+
+Follow-up answer:
+When the API explicitly requires clients to submit an expected
+version or uses it to produce and validate ETags for
+conditional requests.
+
+
+Q6. What is the difference between @NotNull, @NotEmpty, and
+@NotBlank?
+
+Answer:
+@NotNull rejects only null. @NotEmpty also rejects empty
+strings or collections. @NotBlank applies to character
+sequences and additionally rejects values containing only
+whitespace, making it appropriate for required text input.
+
+
+Q7. Why combine @NotBlank and @Size?
+
+Answer:
+@NotBlank enforces presence and meaningful text, while @Size
+enforces the database-aligned maximum length. They express
+different constraints and produce clearer errors.
+
+
+Q8. Does @Email prove that an email address exists or belongs
+to the restaurant?
+
+Answer:
+No. It performs syntax-oriented validation. Ownership requires
+a separate verification workflow such as a confirmation
+message.
+
+
+Q9. Why is the phone validation international rather than a
+10-digit regex?
+
+Answer:
+Phone lengths and formats differ by country. The implemented
+pattern accepts canonical E.164-oriented values beginning with
+"+", followed by a non-zero country-code digit and up to 15
+digits in total.
+
+Possible follow-up:
+Does the regex prove the number can receive calls?
+
+Follow-up answer:
+No. It validates shape only. Deliverability and ownership need
+an external verification process.
+
+
+Q10. How is the website scheme restricted?
+
+Answer:
+An optional @Pattern accepts values beginning with http:// or
+https://, case-insensitively, and rejects whitespace. It does
+not perform a network request or prove that the target is safe
+or controlled by the restaurant.
+
+
+Q11. Why do countryCode and currencyCode use uppercase
+patterns?
+
+Answer:
+They enforce a stable ISO-style representation: two letters
+for country and three for currency. The patterns validate
+shape, not whether the values are real or supported codes.
+
+Possible follow-up:
+How would you validate actual supported codes?
+
+Follow-up answer:
+Use a reviewed supported-code policy or standard-library data
+in the appropriate application validation layer. Do not assume
+that every syntactically valid code is supported by the
+business.
+
+
+Q12. Why are @DecimalMin and @DecimalMax used for coordinates?
+
+Answer:
+The DTO uses BigDecimal, and these constraints enforce
+inclusive numeric ranges of -90 to 90 for latitude and -180 to
+180 for longitude without floating-point conversion.
+
+
+Q13. Do coordinate range constraints ensure a complete
+location?
+
+Answer:
+No. They validate each supplied value independently. The rule
+that latitude and longitude must be supplied together is
+cross-field validation and was intentionally deferred.
+
+
+Q14. How is timezone validated without a custom annotation?
+
+Answer:
+A standard @AssertTrue constraint is placed on a derived
+boolean getter. The getter checks the request value against
+ZoneId.getAvailableZoneIds(). @NotBlank separately handles
+missing values.
+
+Possible follow-up:
+Why is the validation getter annotated with @JsonIgnore?
+
+Follow-up answer:
+It is an implementation detail, not part of the request JSON
+contract. @JsonIgnore prevents Jackson from treating the
+derived boolean as a JSON property.
+
+
+Q15. Why not validate timezone with only a regex?
+
+Answer:
+A regex can check appearance but cannot reliably know the
+available IANA region identifiers. Java's ZoneId data provides
+semantic membership validation.
+
+
+Q16. Why are validation annotations placed on request DTOs
+instead of only on the entity?
+
+Answer:
+Request validation gives API clients early, field-specific
+feedback and keeps transport rules at the boundary. Database
+constraints still protect persistence integrity; the two
+layers are complementary.
+
+
+Q17. Should response DTO fields have Bean Validation
+annotations?
+
+Answer:
+Usually request validation is the priority because it handles
+untrusted input. Response correctness should be guaranteed by
+mapping and service tests. Adding request-style constraints to
+a response does not automatically validate it during normal
+serialization.
+
+
+Q18. Can the current RestaurantRequest support a partial PATCH
+correctly?
+
+Answer:
+No. Required fields use @NotBlank or @NotNull, so omitted
+fields would fail validation. A partial update needs a separate
+update DTO, validation groups, or an explicit field-presence
+model. Reusing the creation DTO by weakening constraints would
+make creation validation unsafe.
+
+
+Q19. Why is mapping logic not placed inside the DTO?
+
+Answer:
+DTOs should remain boundary data structures. Mapping is a
+separate responsibility and will be introduced only when the
+service/API flow requires it, avoiding premature coupling to
+the entity.
+
+
+Q20. Why use Lombok @Getter, @Setter, and
+@NoArgsConstructor on DTOs?
+
+Answer:
+They match the existing project style, reduce boilerplate, and
+support framework property binding. @Data was avoided because
+its generated equality, hash, and toString behavior is not
+required for these contracts.
+
+
+Q21. What important validations remain deferred?
+
+Answer:
+Coordinate pairing, actual supported country/currency
+membership, country-specific postal rules, phone/email
+ownership, URL reachability/safety, and partial-update
+semantics remain deferred until their business or API
+requirements are implemented. No food-safety rules belong in
+these profile DTOs.

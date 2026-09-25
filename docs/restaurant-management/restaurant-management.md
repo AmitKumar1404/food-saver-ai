@@ -14,7 +14,7 @@ This module provides the restaurant identity that later modules can reference:
 - Customer Ordering
 - AI Agents
 
-The persistence foundation now includes the `Restaurant` JPA entity, its `BusinessType` and `RestaurantStatus` enums, and `RestaurantRepository`. No DTO, service, controller, endpoint, security component, or database migration has been implemented yet.
+The implemented foundation now includes the `Restaurant` JPA entity, its `BusinessType` and `RestaurantStatus` enums, `RestaurantRepository`, and separate request/response DTOs. No mapper, service, controller, endpoint, security component, or database migration has been implemented yet.
 
 ### Scope boundary
 
@@ -348,8 +348,10 @@ No validation in this module should infer food safety from restaurant type, stat
 - `backend/src/main/java/com/foodsaver/enums/BusinessType.java`
 - `backend/src/main/java/com/foodsaver/enums/RestaurantStatus.java`
 - `backend/src/main/java/com/foodsaver/repository/RestaurantRepository.java`
+- `backend/src/main/java/com/foodsaver/dto/request/RestaurantRequest.java`
+- `backend/src/main/java/com/foodsaver/dto/response/RestaurantResponse.java`
 
-`Restaurant` remains in `com.foodsaver.entity`, the reusable enum types are kept separately in `com.foodsaver.enums`, and persistence access is isolated in `com.foodsaver.repository`. DTO, service, controller, exception handling, security, messaging, caching, AI, and food-safety logic remain unimplemented.
+`Restaurant` remains in `com.foodsaver.entity`, reusable enum types are kept in `com.foodsaver.enums`, persistence access is isolated in `com.foodsaver.repository`, and API-bound data shapes are separated under `com.foodsaver.dto.request` and `com.foodsaver.dto.response`. Mapping, service, controller, exception handling, security, messaging, caching, AI, and food-safety logic remain unimplemented.
 
 ### 9.2 Core JPA mapping
 
@@ -422,7 +424,37 @@ Spring Data parses `findByPublicId` as a derived query: `findBy` is the query su
 
 The method uses the Java entity property name, not the physical `public_id` column name. No SQL, JPQL, `@Query`, or unnecessary repository operation was added.
 
-### 9.7 Remaining layers
+### 9.7 DTO implementation
+
+`RestaurantRequest` contains only fields supplied by a client when creating or fully updating restaurant profile data. It deliberately excludes `id`, `publicId`, `status`, `version`, `createdAt`, and `updatedAt` because those values are managed by persistence or the application lifecycle.
+
+Required request strings use `@NotBlank`; optional and required strings use `@Size` with the limits approved for the entity design. Other implemented constraints are:
+
+- `@NotNull` for `businessType`.
+- `@Email` for contact email syntax.
+- `@Pattern("^\\+[1-9]\\d{1,14}$")` for canonical, international E.164-oriented telephone input.
+- An HTTP/HTTPS `@Pattern` for the optional website URL.
+- Uppercase two- and three-letter patterns for ISO-style country and currency codes.
+- `@DecimalMin` and `@DecimalMax` for latitude and longitude ranges.
+- `@AssertTrue` on a derived, Jackson-ignored validation property that verifies the timezone against Java's available IANA `ZoneId` values.
+
+The timezone helper returns true for null or blank input so `@NotBlank` remains responsible for the required-field message. `@JsonIgnore` prevents the derived validation property from becoming part of the JSON contract.
+
+`RestaurantResponse` exposes the approved public/management representation: public ID, profile data, business type, status, and creation/update timestamps. It excludes the internal database `id` and optimistic-lock `version`. Version exposure is deferred until an explicit API concurrency contract such as ETags or conditional requests is designed.
+
+Both DTOs are plain Lombok-backed data carriers with getters, setters, and a no-argument constructor. They contain no persistence annotations and are separate from the JPA entity. No entity/DTO mapping logic or mapper class was introduced.
+
+#### Intentionally deferred validation
+
+- Latitude/longitude paired presence remains a cross-field rule for a later validation step.
+- The country and currency patterns validate ISO-style shape only; membership in the supported ISO code sets and supported-market policy are deferred.
+- The website pattern restricts the scheme and rejects whitespace but does not prove that the URL is reachable, safe, or owned by the restaurant.
+- Phone ownership and deliverability cannot be proven by syntax validation.
+- Postal-code rules remain country-specific and are deferred until supported countries are finalized.
+- Because one request DTO has required fields, it is suitable for creation or full profile updates. A future partial `PATCH` contract will need a separate update DTO or an explicit field-presence strategy; weakening required validation here would make creation unsafe.
+- Food-safety eligibility validation is not part of these DTOs.
+
+### 9.8 Remaining layers
 
 The remaining implementation must continue to follow the project package structure:
 
@@ -438,7 +470,7 @@ exception
 config
 ```
 
-No DTO, service, controller, exception, security, configuration, messaging, caching, or AI class was added in this step.
+No mapper, service, controller, exception, security, configuration, messaging, caching, or AI class was added in this step.
 
 ---
 
@@ -463,7 +495,7 @@ An error response should contain a stable machine-readable code, safe human-read
 
 ## 11. Testing and Validation
 
-No new test class was added because this step was limited to the entity and enums.
+No new test class was added because this step was limited to DTO implementation and documentation.
 
 Validation performed:
 
@@ -471,6 +503,7 @@ Validation performed:
 - `mvn clean test` compiled the application and tests, then the existing `FoodSaverApplicationTests.contextLoads` test failed while creating the JPA context because a usable MySQL connection/JDBC metadata was not available in the execution environment.
 - No `pom.xml` or application configuration was changed to bypass that infrastructure requirement.
 - After adding `RestaurantRepository`, `mvn clean compile` completed successfully and compiled five source files.
+- After adding the request and response DTOs, `mvn clean compile` completed successfully and compiled seven source files.
 
 Future implementation should include:
 
