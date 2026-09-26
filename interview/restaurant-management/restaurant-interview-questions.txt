@@ -1,0 +1,1907 @@
+============================================================
+FOODSAVER AI - RESTAURANT MANAGEMENT INTERVIEW QUESTIONS
+============================================================
+
+Module:
+Restaurant Management - Requirements and Database Design
+
+Purpose:
+Interview preparation from beginner to approximately
+3-year experience level.
+
+Status:
+Requirements and database design completed. The Restaurant JPA
+entity, BusinessType/RestaurantStatus enums, and
+RestaurantRepository are implemented. Restaurant request and
+response DTOs and the Restaurant service layer are also
+implemented. The initial Restaurant REST controller is
+implemented; global HTTP exception mapping has not started.
+
+
+============================================================
+1. BEGINNER QUESTIONS
+============================================================
+
+Q1. What is the difference between a business requirement
+and a functional requirement?
+
+Answer:
+A business requirement explains the outcome the business
+needs, such as onboarding a restaurant. A functional
+requirement describes system behavior that supports that
+outcome, such as creating, retrieving, and updating a
+restaurant profile.
+
+Possible follow-up:
+What is a non-functional requirement?
+
+Follow-up answer:
+It defines a quality attribute or operating constraint, such
+as security, performance, reliability, or maintainability.
+
+
+Q2. Why does the proposed restaurant table have both "id"
+and "public_id"?
+
+Answer:
+"id" is a compact numeric primary key suited to joins and
+indexes. "public_id" is a non-sequential identifier intended
+for URLs and APIs so internal sequence values and approximate
+record counts are not exposed.
+
+Possible follow-up:
+Is a UUID itself an authorization control?
+
+Follow-up answer:
+No. An unguessable identifier reduces enumeration risk but
+does not replace authentication and resource-level
+authorization.
+
+
+Q3. Why is postal_code stored as VARCHAR instead of a numeric
+type?
+
+Answer:
+Postal codes are identifiers, not quantities. They may contain
+letters, spaces, hyphens, and leading zeros, so a numeric type
+would lose valid information.
+
+
+Q4. What is a database primary key?
+
+Answer:
+A primary key uniquely identifies each row and is non-null.
+The proposed restaurants table uses a database-generated
+BIGINT "id" as its primary key.
+
+
+Q5. What is a unique constraint?
+
+Answer:
+A unique constraint prevents two rows from having the same
+value or value combination in constrained columns. It also
+protects integrity when concurrent requests pass application
+validation at the same time.
+
+
+Q6. Why are restaurant name, contact email, and contact phone
+not unique?
+
+Answer:
+Different restaurants or chain outlets can share a name, and
+multiple outlets can legitimately use one operational email
+address or telephone number. Making them globally unique would
+reject valid data.
+
+
+Q7. Why should country and currency use standard codes?
+
+Answer:
+ISO country and currency codes avoid inconsistent free-text
+values and provide stable identifiers for validation,
+integration, and reporting.
+
+
+Q8. Why use an IANA timezone such as "Asia/Kolkata" instead of
+a value such as "+05:30"?
+
+Answer:
+An IANA timezone represents regional time rules. A fixed
+offset does not model historical or future offset changes,
+including daylight-saving changes in applicable regions.
+
+
+============================================================
+2. INTERMEDIATE QUESTIONS
+============================================================
+
+Q1. What is the difference between nullability and uniqueness?
+
+Answer:
+Nullability determines whether a column may omit a value.
+Uniqueness determines whether the same non-null value or
+combination may appear in multiple rows. They enforce
+different business rules.
+
+
+Q2. Why validate data in both request DTOs and the database?
+
+Answer:
+DTO validation produces early, meaningful API errors. Database
+constraints remain the final integrity boundary for races,
+bugs, batch jobs, or other write paths. Neither layer makes the
+other unnecessary.
+
+
+Q3. What is optimistic locking, and why is a version column
+proposed?
+
+Answer:
+Optimistic locking detects whether another transaction changed
+a record after it was read. An update includes the expected
+version; if it no longer matches, the update fails instead of
+silently overwriting newer data.
+
+Possible follow-up:
+What HTTP response is reasonable for a stale update?
+
+Follow-up answer:
+409 Conflict is a reasonable choice when the request conflicts
+with the current resource state. The API should return a stable
+error code and let the client refresh before retrying.
+
+
+Q4. Why should enum values be stored as strings rather than
+ordinal numbers?
+
+Answer:
+Ordinal storage couples persisted data to declaration order.
+Reordering or inserting enum constants can silently change
+meaning. Stable string values are readable and safer to evolve.
+
+
+Q5. Why should created_at and updated_at use UTC?
+
+Answer:
+UTC gives one unambiguous timeline across regions. The
+restaurant's IANA timezone is used when local business time
+must be displayed or interpreted.
+
+
+Q6. Why use PATCH for a profile update?
+
+Answer:
+PATCH can represent a partial change without requiring the
+client to resend the complete profile. Its contract must
+clearly distinguish an omitted field from a field explicitly
+set to null.
+
+Possible follow-up:
+Could PUT be used?
+
+Follow-up answer:
+Yes, if the API defines complete resource replacement and
+requires all replaceable fields. Consistency of semantics is
+more important than choosing PATCH automatically.
+
+
+Q7. Why is status change separated from the general profile
+update?
+
+Answer:
+Status transitions usually have stricter authorization,
+allowed-transition rules, auditing, and side effects. A
+dedicated operation prevents mass-assignment of sensitive
+state through an ordinary profile request.
+
+
+Q8. Why should a list API always be paginated?
+
+Answer:
+Unbounded collections cause unpredictable database load,
+memory use, response size, and latency as data grows.
+Pagination creates explicit limits and stable client behavior.
+
+
+Q9. Why use a deterministic secondary sort for pagination?
+
+Answer:
+The primary sort value may not be unique. Adding a unique
+secondary key such as "id" prevents rows from changing order
+arbitrarily between pages when values tie.
+
+
+Q10. Why should JPA entities not be returned directly by REST
+controllers?
+
+Answer:
+Entities model persistence, not the public contract. Exposing
+them can leak internal fields, trigger lazy-loading problems,
+create serialization cycles, allow mass assignment, and make
+database refactoring break API clients. DTOs provide an
+intentional boundary.
+
+
+Q11. Why does the initial design keep one address on the
+restaurant table?
+
+Answer:
+The current assumption is one physical outlet and one pickup
+address per restaurant record. A separate address model would
+add complexity without a current multiple-address requirement.
+It should be revisited for billing, registered-office, or
+multiple pickup addresses.
+
+
+Q12. Why are opening hours not stored in a JSON column now?
+
+Answer:
+Real schedules can include split shifts, days of week,
+holidays, and exceptions. Adding an underspecified JSON field
+would avoid proper modeling but make validation and querying
+harder. A schedule model should be designed when requirements
+are known.
+
+
+============================================================
+3. ADVANCED QUESTIONS
+============================================================
+
+Q1. How do you choose a composite database index?
+
+Answer:
+Start from an implemented query's filtering, sorting, and
+selectivity, then verify with its execution plan. Column order
+matters because a B-tree generally supports its leftmost
+prefix. Indexes should not be added merely because a column
+looks important.
+
+Possible follow-up:
+Why propose (status, id)?
+
+Follow-up answer:
+It supports filtering by status and deterministic traversal by
+id. The exact index should still be confirmed against the
+implemented query and data distribution.
+
+
+Q2. Why is a normal latitude/longitude B-tree not enough for
+nearby search?
+
+Answer:
+Distance queries are spatial, not independent equality or
+simple range checks on two columns. A spatial point with an
+SRID and spatial index, or a suitable search service, is a
+better candidate once nearby-search requirements are defined.
+
+
+Q3. Why not use UUID as the table's only primary key?
+
+Answer:
+It is possible, but wide or randomly distributed UUID primary
+keys can increase clustered-index and secondary-index size and
+reduce insertion locality. A BIGINT internal key plus UUID
+public key balances database efficiency with external
+identity. Actual scale may justify a different design later.
+
+
+Q4. Why is CHAR(36) proposed for public_id instead of
+BINARY(16)?
+
+Answer:
+CHAR(36) is easier to inspect and implement in the initial
+module. BINARY(16) is more space efficient, but conversion and
+UUID ordering add complexity. Optimization should follow
+measured scale rather than being introduced prematurely.
+
+
+Q5. What race can occur if uniqueness is checked only in the
+service layer?
+
+Answer:
+Two transactions can both observe that a value is available
+and then both insert it. A database unique constraint closes
+that race. The application should translate the resulting
+constraint violation into a safe conflict response.
+
+
+Q6. Why should Hibernate ddl-auto=update not manage a
+production schema?
+
+Answer:
+Automatic updates do not provide a reviewed, repeatable,
+versioned migration history and may produce unsafe or
+environment-dependent changes. Flyway or Liquibase migrations
+make schema evolution explicit and testable.
+
+
+Q7. What is the difference between deactivation and soft
+deletion?
+
+Answer:
+Deactivation is a business lifecycle state that prevents
+normal participation while retaining the record. Soft deletion
+usually marks a row as deleted and requires every query to
+exclude it correctly. They solve related but different
+problems.
+
+
+Q8. Why are created_by and updated_by deferred?
+
+Answer:
+The system does not yet have a defined authenticated actor or
+user-to-restaurant membership model. Adding actor columns now
+would produce ambiguous nullable values. They should be added
+when their source and authorization semantics are defined.
+
+
+Q9. How should cross-field coordinate validation work?
+
+Answer:
+Latitude and longitude must either both be present or both be
+absent. Latitude must be from -90 to 90 and longitude from
+-180 to 180. This requires object-level validation in addition
+to individual field validation.
+
+
+Q10. Why is restaurant lifecycle status not a food-safety
+field?
+
+Answer:
+It controls platform participation for the restaurant account.
+It says nothing about a food batch's preparation, storage,
+handling, or eligibility. Food safety belongs to a separate
+deterministic rules module and cannot be inferred from an
+ACTIVE restaurant.
+
+
+============================================================
+4. APPROXIMATELY 3-YEAR EXPERIENCE QUESTIONS
+============================================================
+
+Q1. How would you design a production-oriented Restaurant
+Management module?
+
+Answer:
+Start with explicit scope and requirements. Model constrained
+restaurant data and lifecycle states, use separate internal
+and public IDs, DTOs at the API boundary, service-layer
+business rules, repositories for persistence, centralized
+errors, Bean Validation plus database constraints,
+transactions, optimistic locking, pagination, authorization,
+auditing, migrations, and unit/integration/API tests. Defer
+unconfirmed concerns rather than adding generic fields.
+
+
+Q2. What database constraints would you apply to the initial
+restaurants table?
+
+Answer:
+A primary key on id, a unique non-null constraint on public_id,
+non-null constraints for required profile and system fields,
+bounded VARCHAR lengths, and valid persistence representations
+for status/type. Cross-field and lifecycle rules remain in the
+application, with database checks considered where portability
+and migration policy support them.
+
+
+Q3. How would you prevent lost updates to restaurant profiles?
+
+Answer:
+Use optimistic locking with a version column. Read the current
+version, include it in the update condition, increment it on
+success, and return a conflict if no row matches because
+another update committed first.
+
+
+Q4. How would you design authorization before exposing these
+APIs?
+
+Answer:
+Define users and restaurant membership/roles first. Authenticate
+the actor, authorize access to the target public_id, limit
+editable fields by role, reserve status transitions for
+authorized administration, and enforce authorization in the
+service/application boundary as well as HTTP security rules.
+
+
+Q5. How would you make restaurant search scalable?
+
+Answer:
+Require pagination and bounded page sizes, expose only
+supported filters/sorts, use deterministic ordering, add
+indexes from real query patterns, inspect execution plans,
+avoid wildcard scans where possible, and introduce dedicated
+text or geospatial search only when requirements justify it.
+
+
+Q6. How would you evolve a restaurant table without downtime?
+
+Answer:
+Use versioned migrations and an expand-and-contract approach:
+add backward-compatible nullable fields or new tables, deploy
+code that can handle both forms, backfill in controlled
+batches, switch reads/writes, then add strict constraints or
+remove obsolete fields in a later release.
+
+
+Q7. How would you protect sensitive fields in API responses?
+
+Answer:
+Use separate response DTOs or projections for administrative,
+restaurant-member, and public views. Map only allow-listed
+fields, enforce resource authorization, avoid entities in
+serialization, and test that contact and audit fields do not
+appear in public responses.
+
+
+============================================================
+5. SCENARIO-BASED QUESTIONS
+============================================================
+
+Q1. Two managers edit the same restaurant. The second save
+silently removes the first manager's changes. How do you fix
+this?
+
+Answer:
+Add optimistic locking with a version field. Reject the stale
+update with 409 Conflict and require the second manager to
+reload and reconcile the current data.
+
+
+Q2. Two branches use the same contact email, and registration
+of the second branch fails. What design mistake likely caused
+this?
+
+Answer:
+The contact email was incorrectly treated as a unique account
+identifier. It is an operational contact channel and should
+not be globally unique unless a confirmed business rule says
+otherwise.
+
+
+Q3. A client submits latitude but omits longitude. What should
+happen?
+
+Answer:
+Reject the request with a field or object-level validation
+error. A partial coordinate pair cannot identify a valid
+location.
+
+
+Q4. An ACTIVE restaurant creates inventory. Can the Restaurant
+module mark its food eligible for sale?
+
+Answer:
+No. ACTIVE only means the restaurant may participate in
+platform workflows. Food eligibility requires the future
+dedicated safety and eligibility module and its deterministic
+rules.
+
+
+Q5. A restaurant asks to delete its profile, but completed
+orders reference it. What should the system do?
+
+Answer:
+Do not blindly hard-delete the row. Apply the defined
+deactivation and retention policy, preserve referential and
+audit history, and handle any legally required erasure through
+a designed anonymization/deletion process.
+
+
+Q6. Search by status becomes slow after the table grows. What
+steps should you take?
+
+Answer:
+Capture the exact query and data distribution, inspect the
+execution plan, verify pagination and sorting, then add or
+adjust an index such as (status, id) if evidence supports it.
+Measure again after the change.
+
+
+Q7. An administrator activates a restaurant directly through
+the general profile PATCH endpoint. What is wrong?
+
+Answer:
+Sensitive lifecycle state was exposed to mass assignment.
+Status changes should use a dedicated command/endpoint with
+explicit authorization, transition validation, and auditing.
+
+
+Q8. The product expands to a country without state/province
+values. What must change?
+
+Answer:
+Replace the initial universal requirement with country-aware
+address validation and migrate nullability if necessary.
+Address rules should follow supported-market requirements, not
+one country's assumptions.
+
+
+============================================================
+6. POSSIBLE INTERVIEWER FOLLOW-UPS
+============================================================
+
+Q1. Would you add a database CHECK constraint for latitude and
+longitude?
+
+Answer:
+It can provide useful defense in depth if supported reliably by
+the selected MySQL version and migration policy. Application
+validation is still needed for clear errors and cross-field
+behavior.
+
+
+Q2. Should contact_email always be converted fully to
+lowercase?
+
+Answer:
+Domain names are case-insensitive, but SMTP local-part case
+semantics are more nuanced. Define a deliberate normalization
+and lookup policy instead of changing user data without
+consideration.
+
+
+Q3. Why not put all address data into one text column?
+
+Answer:
+A single field is easy to display but difficult to validate,
+filter, normalize, and integrate with geocoding. Structured
+fields support those operations while address_line fields
+preserve human-readable detail.
+
+
+Q4. Should status be a MySQL ENUM?
+
+Answer:
+It can enforce allowed values, but it couples lifecycle changes
+to database type migrations and may be less portable. A
+VARCHAR with a stable application enum and migration-managed
+constraint is often easier to evolve. The project should make
+one explicit choice.
+
+
+Q5. Does using PATCH make an endpoint non-idempotent?
+
+Answer:
+Not necessarily. Setting fields to specified values can be
+idempotent because repeating the same request leaves the same
+state. Operations such as "increment" are not idempotent.
+
+
+Q6. Why not add indexes to every searchable field?
+
+Answer:
+Every index consumes storage and increases insert/update cost.
+Indexes can also be ignored if they do not match query
+patterns or are not selective. Add them from measured needs.
+
+
+============================================================
+7. TRICKY QUESTIONS
+============================================================
+
+Q1. If Bean Validation passes, is the data guaranteed to be
+valid?
+
+Answer:
+No. Business state may have changed, authorization may fail,
+concurrent requests may conflict, and database constraints may
+still reject the write. Validation is one layer, not the whole
+correctness model.
+
+
+Q2. Does a database unique constraint remove the need to check
+for duplicates before saving?
+
+Answer:
+No. A pre-check can improve user feedback, while the unique
+constraint closes the concurrency race. The application must
+still handle a constraint violation safely.
+
+
+Q3. Is hiding the numeric ID enough to secure a restaurant
+resource?
+
+Answer:
+No. Public UUIDs must still be protected by authentication and
+resource-level authorization. Security through identifier
+obscurity is insufficient.
+
+
+Q4. Is restaurant name a good natural primary key?
+
+Answer:
+No. Names are not guaranteed unique, can change, and may vary
+in spelling or branding. A stable surrogate key avoids
+propagating name changes through relationships.
+
+
+Q5. Does status INACTIVE mean the row should be excluded from
+every query?
+
+Answer:
+No. It should be excluded from applicable active/public
+workflows but retained for authorized history, reporting, and
+referential integrity. Query behavior depends on use case.
+
+
+Q6. Can an ACTIVE restaurant automatically publish surplus
+food offers?
+
+Answer:
+No. Restaurant activation is only one platform prerequisite.
+Future inventory, availability, authorization, and deterministic
+food-eligibility checks must independently pass.
+
+
+Q7. Is CHAR(36) always the best UUID storage type?
+
+Answer:
+No. It is an initial clarity trade-off. BINARY(16) is smaller
+and can improve index efficiency, while ordered UUID strategies
+can improve locality. The best choice depends on scale,
+database support, and operational complexity.
+
+
+============================================================
+8. ENTITY IMPLEMENTATION QUESTIONS
+============================================================
+
+Q1. What does @Entity do?
+
+Answer:
+@Entity marks a Java class as a JPA persistent entity. The JPA
+provider includes it in the persistence metamodel and can map
+its instances to database rows.
+
+Possible follow-up:
+Does @Entity define the database table name?
+
+Follow-up answer:
+Not by itself. Without @Table, the provider applies its naming
+strategy. FoodSaver uses @Table(name = "restaurants") to make
+the mapping explicit.
+
+
+Q2. Why is @Table used on Restaurant?
+
+Answer:
+It explicitly maps the class to "restaurants" and provides a
+place to declare the named public-ID unique constraint and
+composite indexes. This avoids relying on implicit naming.
+
+
+Q3. What does @Id mean?
+
+Answer:
+@Id identifies the entity's primary-key attribute. Because
+annotations are placed on fields in Restaurant, JPA uses field
+access for persistence.
+
+Possible follow-up:
+Why is id a Long instead of long?
+
+Follow-up answer:
+Long can be null before the entity is persisted, which clearly
+represents that the database-generated identity has not yet
+been assigned.
+
+
+Q4. What does @GeneratedValue(strategy =
+GenerationType.IDENTITY) do?
+
+Answer:
+It tells JPA that the database generates the primary-key value
+during insert, typically using MySQL AUTO_INCREMENT. Hibernate
+retrieves that generated value and assigns it to the entity.
+
+Possible follow-up:
+What trade-off does IDENTITY have?
+
+Follow-up answer:
+The identifier is not available before insert, and identity
+generation can limit some insert-batching strategies. It is
+still a simple, appropriate choice for the current MySQL
+design.
+
+
+Q5. Why does Restaurant use a UUID publicId in addition to its
+Long primary key?
+
+Answer:
+The Long key is efficient for internal joins. The UUID is a
+stable non-sequential external identifier that avoids exposing
+the database sequence through future API URLs and responses.
+It is not a substitute for authorization.
+
+
+Q6. How is publicId generated?
+
+Answer:
+The @PrePersist callback assigns UUID.randomUUID() when
+publicId is null. The field is non-null, non-updatable, and
+protected from a generated setter. The database unique
+constraint handles the extremely unlikely collision and any
+concurrent integrity race.
+
+
+Q7. Why does publicId use @JdbcTypeCode(SqlTypes.CHAR)?
+
+Answer:
+UUID JDBC mappings can vary by database and Hibernate dialect.
+The annotation explicitly selects character storage so the
+Java UUID follows the approved readable CHAR(36) database
+design instead of an implicit binary mapping.
+
+Possible follow-up:
+Is @JdbcTypeCode part of standard JPA?
+
+Follow-up answer:
+No. It is Hibernate-specific. That provider coupling is
+deliberate for this MySQL/Hibernate project and should be
+covered by a database-backed mapping test.
+
+
+Q8. Why use @Enumerated(EnumType.STRING)?
+
+Answer:
+It persists enum constant names such as ACTIVE and BAKERY.
+These values are readable and remain stable if constants are
+reordered. EnumType.ORDINAL would store positions, so
+reordering constants could silently corrupt their meaning.
+
+Possible follow-up:
+Can a STRING enum constant be renamed safely?
+
+Follow-up answer:
+Not automatically. Existing rows contain the old text, so a
+rename requires a deliberate schema/data migration or a more
+explicit persistence mapping.
+
+
+Q9. What does @Version do?
+
+Answer:
+@Version enables optimistic locking. Hibernate includes the
+current version in update/delete conditions and increments it
+after successful changes. A stale transaction then fails
+instead of overwriting a newer update.
+
+Possible follow-up:
+Does @Version lock the database row when it is read?
+
+Follow-up answer:
+No. Optimistic locking normally detects the conflict at write
+time without holding a pessimistic row lock throughout the
+transaction.
+
+
+Q10. Why are createdAt and updatedAt represented by Instant?
+
+Answer:
+Instant represents an unambiguous point on the UTC timeline.
+It is appropriate for audit events independent of the
+restaurant's local timezone. Local display and business-time
+interpretation can use the restaurant's IANA timezone later.
+
+
+Q11. How are audit timestamps populated without Spring Data
+auditing?
+
+Answer:
+@PrePersist sets createdAt and updatedAt immediately before an
+insert. @PreUpdate refreshes updatedAt immediately before an
+update. This keeps the first step self-contained and avoids
+adding auditing configuration before actor auditing is
+designed.
+
+Possible follow-up:
+What is a limitation of application-generated timestamps?
+
+Follow-up answer:
+They use the application server's clock. Production systems
+need clock synchronization and a defined JDBC/database
+timezone. Database defaults are an alternative but must be
+mapped and tested consistently.
+
+
+Q12. Why is BigDecimal used for latitude and longitude?
+
+Answer:
+BigDecimal preserves the declared DECIMAL(9,6) representation
+without binary floating-point rounding behavior. It also maps
+directly to the intended fixed-precision database columns.
+
+Possible follow-up:
+Does BigDecimal enforce valid coordinate ranges?
+
+Follow-up answer:
+No. Precision and scale control numeric storage shape, not the
+-90/90 or -180/180 business ranges. Range and paired-field
+validation will be implemented separately.
+
+
+Q13. What do @Column(nullable = false) and length provide?
+
+Answer:
+They describe schema-level nullability and string-size mapping
+to the JPA provider. They do not replace request validation;
+future DTOs still need meaningful Bean Validation constraints
+and messages.
+
+
+Q14. Why are explicit snake_case column names used?
+
+Answer:
+Explicit names such as "contact_email" make the Java-to-SQL
+contract clear and stable instead of depending on a naming
+strategy that could change between configurations.
+
+
+Q15. Why are setters suppressed for id, publicId, version, and
+audit timestamps?
+
+Answer:
+Those fields are managed by the database, JPA provider, or
+entity lifecycle callbacks. Removing ordinary setters reduces
+accidental application changes and communicates ownership of
+the values.
+
+
+Q16. Why was Lombok @Data not used on Restaurant?
+
+Answer:
+@Data would generate equals, hashCode, toString, getters, and
+setters for all fields. Entity equality is subtle, mutable
+fields make poor hash keys, and future relationships can cause
+lazy loading or recursion in toString. Focused Lombok
+annotations are safer.
+
+
+Q17. Why does a JPA entity need a no-argument constructor?
+
+Answer:
+The JPA provider needs a public or protected no-argument
+constructor to instantiate the entity reflectively. The
+implemented @NoArgsConstructor supplies it using the Lombok
+dependency already present in the project.
+
+
+Q18. Are @Column constraints sufficient input validation?
+
+Answer:
+No. They help define persistence integrity, but API requests
+need DTO-level validation for early and understandable errors.
+Cross-field rules such as paired coordinates also need
+application validation.
+
+
+Q19. What happens if the application adds a new enum constant?
+
+Answer:
+The Java mapping accepts it, but the complete system must also
+review migrations, database constraints if any, API contracts,
+business transitions, tests, and compatibility with existing
+consumers. Adding a constant is not only a code change.
+
+
+Q20. Does this Restaurant entity implement food-safety logic?
+
+Answer:
+No. RestaurantStatus describes platform lifecycle only. The
+entity contains no food-safety status, selling window, or
+eligibility decision. Those deterministic rules belong to a
+later dedicated module.
+
+
+============================================================
+9. REPOSITORY LAYER QUESTIONS
+============================================================
+
+Q1. What is the responsibility of a repository in the layered
+architecture?
+
+Answer:
+A repository provides persistence access for entities and
+keeps database interaction out of controllers and business
+services. Business decisions remain in the service layer; the
+repository focuses on retrieving and storing persistent data.
+
+
+Q2. Why does RestaurantRepository extend
+JpaRepository<Restaurant, Long>?
+
+Answer:
+Restaurant is the managed entity type, and Long is the type of
+the field annotated with @Id. JpaRepository's second generic
+parameter must match the JPA primary-key type, not another
+unique field.
+
+Possible follow-up:
+Why is UUID not the JpaRepository ID type?
+
+Follow-up answer:
+publicId is unique and used for external lookup, but it is not
+the entity field annotated with @Id. The internal primary key
+is Long id, so the repository ID type is Long.
+
+
+Q3. What does JpaRepository provide?
+
+Answer:
+It provides standard CRUD, pagination, sorting, flushing, and
+batch-oriented persistence operations built on Spring Data
+JPA. Spring creates the repository implementation proxy at
+runtime.
+
+Possible follow-up:
+Why not declare save(), findById(), and deleteById() again?
+
+Follow-up answer:
+They are already inherited. Redeclaring them without changing
+their contract adds noise and maintenance cost.
+
+
+Q4. How does Spring Data derive the query for
+findByPublicId(UUID publicId)?
+
+Answer:
+Spring Data parses the method name. "findBy" introduces the
+query predicate, and "PublicId" resolves to the publicId Java
+property on Restaurant. It then creates the appropriate JPA
+query without custom SQL or JPQL.
+
+Possible follow-up:
+Does the method name use public_id from the database?
+
+Follow-up answer:
+No. Derived query names use Java entity property names.
+Hibernate maps Restaurant.publicId to the public_id column.
+
+
+Q5. Why does findByPublicId return Optional<Restaurant>?
+
+Answer:
+A lookup can legitimately find no restaurant. Optional makes
+that absence explicit and avoids returning null as the normal
+repository contract.
+
+Possible follow-up:
+Why not return List<Restaurant>?
+
+Follow-up answer:
+public_id has a database unique constraint, so at most one row
+should match. A list would weaken that cardinality guarantee in
+the method contract.
+
+
+Q6. Why does findByPublicId accept UUID rather than String?
+
+Answer:
+The Restaurant.publicId property is typed as UUID. Using UUID
+preserves type safety and lets framework conversion happen at
+the API boundary later instead of passing unvalidated strings
+through the persistence layer.
+
+
+Q7. Is @Repository required on RestaurantRepository?
+
+Answer:
+No. Spring Data discovers repository interfaces in the
+application's package tree and creates a managed proxy. Adding
+@Repository is unnecessary for this interface, although the
+generated repository still participates in Spring persistence
+exception translation.
+
+
+Q8. Why was no @Query annotation added?
+
+Answer:
+The required equality lookup follows Spring Data's supported
+method-name convention and directly matches an entity
+property. A custom query would duplicate framework behavior
+and add maintenance without solving a real limitation.
+
+
+Q9. When would a custom JPQL or native SQL query be justified?
+
+Answer:
+It may be justified for a query that cannot be expressed
+clearly through derived methods, needs a specific projection,
+uses complex joins or aggregation, or requires a
+database-specific feature. The choice should be driven by an
+actual requirement and tested behavior.
+
+
+Q10. Does successful Java compilation prove that a derived
+query is valid?
+
+Answer:
+Compilation proves the interface and types are valid Java.
+Spring Data validates and creates derived queries when the
+application context initializes. A focused repository
+integration test should ultimately verify query creation and
+database behavior.
+
+Possible follow-up:
+Why is findByPublicId still considered valid here?
+
+Follow-up answer:
+Restaurant has an accessible persistent field named publicId
+of type UUID, and findByPublicId follows Spring Data's standard
+property-expression grammar exactly.
+
+
+Q11. Should controllers call RestaurantRepository directly?
+
+Answer:
+No. The project architecture requires controllers to call
+services. Services own authorization and business workflows,
+while repositories remain persistence-focused.
+
+
+Q12. Does findByPublicId make publicId the primary key?
+
+Answer:
+No. It is a query against a separate unique field. JpaRepository
+operations such as findById still use the internal Long primary
+key.
+
+
+Q13. What happens if duplicate public IDs somehow exist?
+
+Answer:
+The named database unique constraint should prevent that state.
+If inconsistent legacy data existed, a single-result query
+could fail because more than one row matched. Database
+constraints and migration checks are therefore still essential.
+
+
+Q14. How would you test RestaurantRepository?
+
+Answer:
+Use a focused JPA integration test with a test database:
+persist a Restaurant, query by its UUID, verify the matching
+entity, verify an unknown UUID returns Optional.empty(), and
+verify the public-ID unique constraint. The test database
+should reproduce relevant MySQL mapping behavior, especially
+the CHAR(36) UUID mapping.
+
+
+============================================================
+10. DTO AND BEAN VALIDATION QUESTIONS
+============================================================
+
+Q1. What is a DTO?
+
+Answer:
+A Data Transfer Object defines data crossing an application
+boundary. It lets an API accept and return intentional fields
+without exposing the persistence entity or coupling clients to
+the database model.
+
+
+Q2. Why are RestaurantRequest and RestaurantResponse separate?
+
+Answer:
+Requests contain client-controlled input and validation rules.
+Responses contain server-approved output, including generated
+values such as publicId, status, and audit timestamps. Separate
+types prevent accidental mass assignment and data exposure.
+
+Possible follow-up:
+Why not reuse RestaurantRequest as the response?
+
+Follow-up answer:
+It would omit useful server-managed output and blur which
+fields clients are permitted to control.
+
+
+Q3. Why does RestaurantRequest exclude id, publicId, status,
+version, createdAt, and updatedAt?
+
+Answer:
+Those fields are generated or controlled by the database,
+entity lifecycle, or future business workflows. Accepting them
+from clients would permit identity, lifecycle, audit, or
+concurrency-state manipulation.
+
+
+Q4. Why does RestaurantResponse exclude the internal id?
+
+Answer:
+Future APIs should identify restaurants by publicId. Exposing
+the sequential database key would leak an internal
+implementation detail and encourage clients to depend on it.
+
+
+Q5. Why is version excluded from RestaurantResponse?
+
+Answer:
+No API-level concurrency contract has been implemented yet.
+Exposing version without defining conditional updates, ETags,
+or conflict handling would publish an unsupported contract.
+
+Possible follow-up:
+When could exposing a version be appropriate?
+
+Follow-up answer:
+When the API explicitly requires clients to submit an expected
+version or uses it to produce and validate ETags for
+conditional requests.
+
+
+Q6. What is the difference between @NotNull, @NotEmpty, and
+@NotBlank?
+
+Answer:
+@NotNull rejects only null. @NotEmpty also rejects empty
+strings or collections. @NotBlank applies to character
+sequences and additionally rejects values containing only
+whitespace, making it appropriate for required text input.
+
+
+Q7. Why combine @NotBlank and @Size?
+
+Answer:
+@NotBlank enforces presence and meaningful text, while @Size
+enforces the database-aligned maximum length. They express
+different constraints and produce clearer errors.
+
+
+Q8. Does @Email prove that an email address exists or belongs
+to the restaurant?
+
+Answer:
+No. It performs syntax-oriented validation. Ownership requires
+a separate verification workflow such as a confirmation
+message.
+
+
+Q9. Why is the phone validation international rather than a
+10-digit regex?
+
+Answer:
+Phone lengths and formats differ by country. The implemented
+pattern accepts canonical E.164-oriented values beginning with
+"+", followed by a non-zero country-code digit and up to 15
+digits in total.
+
+Possible follow-up:
+Does the regex prove the number can receive calls?
+
+Follow-up answer:
+No. It validates shape only. Deliverability and ownership need
+an external verification process.
+
+
+Q10. How is the website scheme restricted?
+
+Answer:
+An optional @Pattern accepts values beginning with http:// or
+https://, case-insensitively, and rejects whitespace. It does
+not perform a network request or prove that the target is safe
+or controlled by the restaurant.
+
+
+Q11. Why do countryCode and currencyCode use uppercase
+patterns?
+
+Answer:
+They enforce a stable ISO-style representation: two letters
+for country and three for currency. The patterns validate
+shape, not whether the values are real or supported codes.
+
+Possible follow-up:
+How would you validate actual supported codes?
+
+Follow-up answer:
+Use a reviewed supported-code policy or standard-library data
+in the appropriate application validation layer. Do not assume
+that every syntactically valid code is supported by the
+business.
+
+
+Q12. Why are @DecimalMin and @DecimalMax used for coordinates?
+
+Answer:
+The DTO uses BigDecimal, and these constraints enforce
+inclusive numeric ranges of -90 to 90 for latitude and -180 to
+180 for longitude without floating-point conversion.
+
+
+Q13. Do coordinate range constraints ensure a complete
+location?
+
+Answer:
+No. They validate each supplied value independently. The rule
+that latitude and longitude must be supplied together is
+cross-field validation and was intentionally deferred.
+
+
+Q14. How is timezone validated without a custom annotation?
+
+Answer:
+A standard @AssertTrue constraint is placed on a derived
+boolean getter. The getter checks the request value against
+ZoneId.getAvailableZoneIds(). @NotBlank separately handles
+missing values.
+
+Possible follow-up:
+Why is the validation getter annotated with @JsonIgnore?
+
+Follow-up answer:
+It is an implementation detail, not part of the request JSON
+contract. @JsonIgnore prevents Jackson from treating the
+derived boolean as a JSON property.
+
+
+Q15. Why not validate timezone with only a regex?
+
+Answer:
+A regex can check appearance but cannot reliably know the
+available IANA region identifiers. Java's ZoneId data provides
+semantic membership validation.
+
+
+Q16. Why are validation annotations placed on request DTOs
+instead of only on the entity?
+
+Answer:
+Request validation gives API clients early, field-specific
+feedback and keeps transport rules at the boundary. Database
+constraints still protect persistence integrity; the two
+layers are complementary.
+
+
+Q17. Should response DTO fields have Bean Validation
+annotations?
+
+Answer:
+Usually request validation is the priority because it handles
+untrusted input. Response correctness should be guaranteed by
+mapping and service tests. Adding request-style constraints to
+a response does not automatically validate it during normal
+serialization.
+
+
+Q18. Can the current RestaurantRequest support a partial PATCH
+correctly?
+
+Answer:
+No. Required fields use @NotBlank or @NotNull, so omitted
+fields would fail validation. A partial update needs a separate
+update DTO, validation groups, or an explicit field-presence
+model. Reusing the creation DTO by weakening constraints would
+make creation validation unsafe.
+
+
+Q19. Why is mapping logic not placed inside the DTO?
+
+Answer:
+DTOs should remain boundary data structures. Mapping is a
+separate responsibility and will be introduced only when the
+service/API flow requires it, avoiding premature coupling to
+the entity.
+
+
+Q20. Why use Lombok @Getter, @Setter, and
+@NoArgsConstructor on DTOs?
+
+Answer:
+They match the existing project style, reduce boilerplate, and
+support framework property binding. @Data was avoided because
+its generated equality, hash, and toString behavior is not
+required for these contracts.
+
+
+Q21. What important validations remain deferred?
+
+Answer:
+Coordinate pairing, actual supported country/currency
+membership, country-specific postal rules, phone/email
+ownership, URL reachability/safety, and partial-update
+semantics remain deferred until their business or API
+requirements are implemented. No food-safety rules belong in
+these profile DTOs.
+
+
+============================================================
+11. SERVICE LAYER QUESTIONS
+============================================================
+
+Q1. What is the responsibility of the Service layer?
+
+Answer:
+The Service layer coordinates application use cases, applies
+business rules, defines transaction boundaries, calls
+repositories, handles expected domain/application outcomes,
+and maps between persistence entities and API-facing DTOs.
+
+
+Q2. How is a Service different from a Repository?
+
+Answer:
+A Repository focuses on persistence operations and queries.
+A Service coordinates a complete use case and must not expose
+persistence details to controllers. A service may call one or
+more repositories and enforce rules around those calls.
+
+Possible follow-up:
+Should a Repository return RestaurantResponse?
+
+Follow-up answer:
+Not in this design. The repository works with Restaurant
+entities, while the service maps them to API-facing response
+DTOs.
+
+
+Q3. Why use RestaurantService as an interface with
+RestaurantServiceImpl as its implementation?
+
+Answer:
+The interface defines the application contract independently
+of implementation details. It keeps future controllers
+dependent on an abstraction and allows the implementation to
+change without changing callers.
+
+Possible follow-up:
+Is an interface mandatory for every service?
+
+Follow-up answer:
+No. It should serve an architectural or substitution need, not
+be added mechanically. This project explicitly uses a service
+contract and implementation package structure.
+
+
+Q4. Why is RestaurantServiceImpl annotated with @Service?
+
+Answer:
+@Service marks the class as a Spring-managed service component.
+Component scanning discovers it, and Spring can apply features
+such as dependency injection and transactional proxies.
+
+
+Q5. What is constructor injection?
+
+Answer:
+Dependencies are supplied through the class constructor and
+stored in final fields. RestaurantServiceImpl receives
+RestaurantRepository this way.
+
+Possible follow-up:
+Why prefer constructor injection over field injection?
+
+Follow-up answer:
+Constructor injection makes required dependencies explicit,
+supports immutability, simplifies unit testing, and allows
+objects to be created without reflection-based field changes.
+
+
+Q6. Is @Autowired required on the constructor?
+
+Answer:
+No. When a Spring component has a single constructor, Spring
+uses it automatically. Omitting @Autowired avoids unnecessary
+annotation noise.
+
+
+Q7. What does @Transactional provide?
+
+Answer:
+Spring opens or joins a transaction around the proxied public
+method, commits it on success, and rolls it back for qualifying
+failures. It also binds persistence-context behavior to that
+transaction.
+
+
+Q8. Why is createRestaurant annotated with @Transactional?
+
+Answer:
+Creation is a write use case. Request mapping, save, entity
+lifecycle callbacks, and response mapping should operate
+within one consistent read-write transaction.
+
+
+Q9. Why does the class use
+@Transactional(readOnly = true)?
+
+Answer:
+The class-level annotation defines an appropriate default for
+get-by-publicId and get-all. It communicates that these methods
+do not intend to modify persistent state and can enable
+provider/database optimizations.
+
+Possible follow-up:
+Does readOnly = true enforce database security?
+
+Follow-up answer:
+No. It is primarily a transaction hint and framework
+configuration signal. It does not replace database
+permissions or immutable application design.
+
+
+Q10. How can createRestaurant write when the class is
+read-only?
+
+Answer:
+The method-level @Transactional annotation overrides the
+class-level transaction metadata for that method and creates a
+normal read-write transaction.
+
+
+Q11. Why are private mapping methods not annotated with
+@Transactional?
+
+Answer:
+They are in-memory transformations, not independent use cases.
+Also, Spring's proxy-based transaction interception normally
+applies to externally invoked public methods, not private
+self-invocations.
+
+
+Q12. Why does createRestaurant set
+PENDING_VERIFICATION explicitly?
+
+Answer:
+The initial lifecycle state is a server-side rule. The request
+does not contain status, and the service explicitly preserves
+that rule even though the entity also has a defensive default.
+
+
+Q13. Why does the service not generate publicId?
+
+Answer:
+The entity already owns that persistence lifecycle behavior in
+@PrePersist. Generating it again in the service would duplicate
+responsibility and could create inconsistent behavior across
+other persistence paths.
+
+
+Q14. Why map the entity returned by save() instead of the
+original entity reference?
+
+Answer:
+The repository contract returns the managed/saved result,
+which may contain persistence-generated values and lifecycle
+changes. Using that result makes the service's intent clear
+even when a provider returns the same object instance.
+
+
+Q15. How does getRestaurantByPublicId handle Optional?
+
+Answer:
+It maps the entity to RestaurantResponse when present and uses
+orElseThrow to create RestaurantNotFoundException when absent.
+This avoids null handling and makes the missing-resource
+behavior explicit.
+
+
+Q16. Why create RestaurantNotFoundException?
+
+Answer:
+It gives the service a clear, specific failure type instead of
+throwing a generic exception. A future global exception
+handler can translate it into the agreed HTTP status and error
+body.
+
+Possible follow-up:
+Why is it a RuntimeException?
+
+Follow-up answer:
+Not-found is an application failure callers handle at a
+boundary, and checked declarations would add noise across the
+service contract. Runtime exceptions also follow Spring's
+default transaction rollback behavior.
+
+
+Q17. Why was @ResponseStatus not added to
+RestaurantNotFoundException?
+
+Answer:
+The service layer should not prematurely define the HTTP
+contract. Centralized @RestControllerAdvice mapping will be
+designed with the controller/error architecture later.
+
+
+Q18. How does getAllRestaurants map its result?
+
+Answer:
+It calls findAll(), streams the entities through the same
+toResponse method used by other operations, and collects an
+unmodifiable result list using Stream.toList().
+
+Possible follow-up:
+What is the production concern with findAll()?
+
+Follow-up answer:
+It is unbounded and can consume excessive memory and database
+capacity as the table grows. Pagination and deterministic
+sorting should be introduced before production-scale use.
+
+
+Q19. Why keep mapping inside the service implementation for
+now?
+
+Answer:
+The mapping is currently small and used by one service. Private
+methods keep it consistent without introducing a premature
+mapper abstraction. A mapper component becomes useful when
+mapping is reused or substantially more complex.
+
+
+Q20. What fields must request-to-entity mapping avoid?
+
+Answer:
+It must not accept or copy internal id, publicId, client-chosen
+status, version, createdAt, or updatedAt. Those values are
+managed by persistence or server-side lifecycle rules.
+
+
+Q21. Why should business logic not be placed in a Controller?
+
+Answer:
+Controllers should translate HTTP input/output and delegate to
+application services. Putting transactions, persistence
+coordination, or business rules in controllers couples the
+logic to HTTP, makes reuse difficult, and complicates testing.
+
+
+Q22. Why was PATCH/update not implemented?
+
+Answer:
+RestaurantRequest requires complete creation/full-update data.
+A partial PATCH must distinguish an omitted field from an
+explicit null and needs a dedicated update contract or
+field-presence strategy.
+
+
+Q23. Why was status change not implemented?
+
+Answer:
+Status transitions require authorization roles, allowed
+transition rules, and audit behavior that have not yet been
+defined. Implementing it now would invent security-sensitive
+business policy.
+
+
+Q24. How would you unit test RestaurantServiceImpl?
+
+Answer:
+Mock RestaurantRepository, construct the service directly,
+verify request-to-entity values passed to save(), return a
+saved entity with generated fields, and assert complete
+response mapping. Test present and absent UUID lookups and
+multi-entity list mapping.
+
+Possible follow-up:
+Should a service unit test verify transaction behavior?
+
+Follow-up answer:
+Unit tests can inspect behavior but do not activate Spring
+transaction proxies. Transaction semantics require a Spring
+integration test.
+
+
+Q25. What self-invocation issue can occur with @Transactional?
+
+Answer:
+With standard proxy-based Spring transactions, one method
+calling another transactional method on the same instance
+bypasses the proxy, so the inner annotation may not take
+effect. Transaction boundaries should be designed around
+externally invoked public service operations.
+
+
+Q26. What would you improve before exposing getAllRestaurants
+in a production API?
+
+Answer:
+Introduce a paginated service/repository contract,
+deterministic sorting, maximum page sizes, authorization,
+appropriate response projections, and tests for query and
+mapping behavior.
+
+
+============================================================
+12. REST CONTROLLER QUESTIONS
+============================================================
+
+Q1. What does @RestController do?
+
+Answer:
+@RestController combines @Controller and @ResponseBody. Spring
+discovers the class as an MVC component and serializes method
+return values into the HTTP response body, usually as JSON.
+
+Possible follow-up:
+How is it different from @Controller?
+
+Follow-up answer:
+@Controller is commonly used for MVC views unless individual
+methods use @ResponseBody. @RestController applies response-body
+semantics to every handler method.
+
+
+Q2. Why is @RequestMapping placed at class level?
+
+Answer:
+It defines the shared `/api/v1/restaurants` base path once.
+Method-level mappings then describe only their operation-
+specific path and HTTP method.
+
+
+Q3. Why include `/api/v1` in the endpoint?
+
+Answer:
+Path versioning creates an explicit API compatibility boundary.
+It allows a future incompatible contract to use another
+version while existing clients continue using v1.
+
+
+Q4. What does @PostMapping represent?
+
+Answer:
+It maps HTTP POST requests to a handler method. POST is
+appropriate for creating a new subordinate restaurant resource
+when the server controls its identifiers.
+
+
+Q5. What does @GetMapping represent?
+
+Answer:
+It maps HTTP GET requests to a handler method. GET should be
+safe and read-only from the client's perspective.
+
+
+Q6. What does @RequestBody do?
+
+Answer:
+It asks Spring MVC to deserialize the request body into the
+declared Java DTO using a configured HTTP message converter,
+typically Jackson for JSON.
+
+Possible follow-up:
+Does @RequestBody automatically validate the DTO?
+
+Follow-up answer:
+No. @Valid or @Validated is needed to trigger Bean Validation.
+
+
+Q7. What does @Valid do on RestaurantRequest?
+
+Answer:
+It triggers Jakarta Bean Validation after JSON binding and
+before the controller invokes the service. Invalid input causes
+Spring MVC to raise a validation exception rather than execute
+the method body normally.
+
+
+Q8. Why should validation rules not be repeated in the
+controller?
+
+Answer:
+The request DTO is the boundary contract and central place for
+field constraints. Repeating rules in handlers creates
+inconsistency, clutter, and harder testing.
+
+
+Q9. What does @PathVariable do?
+
+Answer:
+It binds a path-template value to a controller parameter. In
+`/{publicId}`, Spring converts the path text into the declared
+UUID parameter before invoking the method.
+
+Possible follow-up:
+What happens for a malformed UUID?
+
+Follow-up answer:
+Type conversion fails before normal service execution. The
+future global exception strategy should return a consistent
+client-error response.
+
+
+Q10. Why specify @PathVariable("publicId") explicitly?
+
+Answer:
+It makes the connection to the URI template explicit and does
+not depend on Java parameter-name discovery settings.
+
+
+Q11. What is ResponseEntity?
+
+Answer:
+ResponseEntity represents the complete HTTP response,
+including status, headers, and body. It makes controller status
+decisions explicit.
+
+
+Q12. Why does POST return 201 instead of 200?
+
+Answer:
+201 Created communicates that the request successfully created
+a new resource. 200 OK is a general success status and is used
+for the implemented read operations.
+
+Possible follow-up:
+Should a 201 response contain a Location header?
+
+Follow-up answer:
+It is a strong REST practice to provide the new resource URI.
+The current requirement mandates the response body and 201;
+Location-header construction is deferred rather than invented.
+
+
+Q13. Why do GET operations return 200 OK?
+
+Answer:
+They successfully return the requested representation or
+collection without creating a new resource.
+
+
+Q14. Why does RestaurantController depend on
+RestaurantService rather than RestaurantServiceImpl?
+
+Answer:
+The controller depends on the service contract, which reduces
+coupling to implementation details and follows dependency
+inversion within the layered architecture.
+
+
+Q15. Why must the controller not access RestaurantRepository
+directly?
+
+Answer:
+Direct repository access would bypass service-level
+transactions, mapping, not-found behavior, and business rules.
+It also couples HTTP handling to persistence details.
+
+
+Q16. Why should business logic not be placed in a controller?
+
+Answer:
+Controllers should handle HTTP concerns and delegate use
+cases. Business logic in controllers is difficult to reuse,
+mixes responsibilities, and makes both HTTP and business tests
+more complicated.
+
+
+Q17. How is RestaurantService injected into the controller?
+
+Answer:
+It is stored in a final field and supplied through the
+controller's only constructor. Spring automatically uses that
+constructor; no field injection or @Autowired is required.
+
+
+Q18. Why is constructor injection useful in controller tests?
+
+Answer:
+A test can instantiate the controller directly with a mock or
+stub service. There is no need for reflection or a full Spring
+context merely to supply the dependency.
+
+
+Q19. Should controller methods catch
+RestaurantNotFoundException?
+
+Answer:
+No. Repetitive local try/catch blocks would duplicate HTTP
+error mapping. The exception should propagate to a future
+centralized @RestControllerAdvice.
+
+
+Q20. What HTTP status should a missing restaurant eventually
+produce?
+
+Answer:
+The expected REST status is 404 Not Found, but the global
+mapping is deliberately deferred. The service exception itself
+does not yet define an HTTP status.
+
+
+Q21. What happens when RestaurantRequest validation fails?
+
+Answer:
+The service is not invoked. Spring MVC raises its validation
+exception, and the framework currently handles it. A future
+global handler should produce the project's standardized field-
+error response.
+
+
+Q22. Does the controller expose the internal database ID?
+
+Answer:
+No. It returns RestaurantResponse, which contains publicId but
+has no internal id or version field.
+
+
+Q23. Why does the POST controller not generate publicId?
+
+Answer:
+Identifier generation belongs to the entity persistence
+lifecycle. The controller only validates HTTP input and
+delegates creation to the service.
+
+
+Q24. Is returning all restaurants without pagination
+production-ready?
+
+Answer:
+No. It matches the current phase requirement but can become
+expensive as data grows. The API and service need pagination,
+bounded page sizes, and deterministic sorting before
+production-scale use.
+
+
+Q25. Why were filtering and sorting not added now?
+
+Answer:
+They require an explicit API contract and corresponding
+service/repository design. Adding ad hoc query parameters in
+the controller would exceed the requested scope and bypass
+incremental design.
+
+
+Q26. Why is PATCH not implemented with RestaurantRequest?
+
+Answer:
+RestaurantRequest requires full creation data. PATCH needs to
+distinguish omitted fields from explicit null values and should
+use a dedicated partial-update contract.
+
+
+Q27. Why is there no status-change endpoint?
+
+Answer:
+Status transitions require authorization, allowed-transition
+rules, and auditing that are not defined yet. Exposing the
+operation now would create a security-sensitive gap.
+
+
+Q28. How would you test RestaurantController?
+
+Answer:
+Use a focused Spring MVC test with a mocked RestaurantService.
+Verify routing, JSON binding, @Valid behavior, service
+delegation, response bodies, 201 for creation, and 200 for
+reads. Not-found and standardized validation responses should
+be tested when global exception handling is implemented.
+
+
+Q29. What is the difference between a controller unit test and
+an MVC slice test?
+
+Answer:
+A unit test calls the controller directly and checks delegation
+and ResponseEntity values. An MVC slice test exercises Spring
+MVC routing, conversion, validation, and serialization while
+mocking unrelated application layers.
+
+
+Q30. Should @Transactional be placed on controller methods?
+
+Answer:
+No in this design. Transaction boundaries belong to service
+use cases. Putting them in controllers couples persistence
+lifetime to HTTP handling and can keep transactions open during
+unrelated serialization work.
+
+
+Q31. Is @Valid sufficient security for the POST endpoint?
+
+Answer:
+No. Validation checks input shape and constraints. It does not
+authenticate the caller, authorize restaurant creation, prevent
+abuse, or replace rate limiting. Those controls are deferred.
+
+
+Q32. What REST concerns remain deferred?
+
+Answer:
+Centralized error responses, 404 mapping, Location headers,
+pagination, sorting, filtering, authentication, authorization,
+OpenAPI documentation, rate limiting, and controller tests
+remain future work.
