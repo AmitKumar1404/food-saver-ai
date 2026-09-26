@@ -1,0 +1,450 @@
+============================================================
+FOODSAVER AI - GLOBAL EXCEPTION HANDLING INTERVIEW QUESTIONS
+============================================================
+
+Module:
+Global Exception Handling
+
+Purpose:
+Interview preparation from beginner to approximately
+3-year experience level.
+
+Current implementation:
+- ErrorResponse
+- GlobalExceptionHandler
+- 400 mapping for MethodArgumentNotValidException
+- 404 mapping for RestaurantNotFoundException
+
+
+============================================================
+1. BEGINNER QUESTIONS
+============================================================
+
+Q1. What is global exception handling in Spring Boot?
+
+Answer:
+It is centralized translation of exceptions raised during web
+request processing into consistent HTTP status codes and
+response bodies. It avoids duplicating error mapping in every
+controller method.
+
+
+Q2. What does @RestControllerAdvice do?
+
+Answer:
+It combines @ControllerAdvice with @ResponseBody semantics.
+Its @ExceptionHandler methods can apply across controllers, and
+their return values are serialized into response bodies.
+
+Possible follow-up:
+How is @ControllerAdvice different?
+
+Follow-up answer:
+@ControllerAdvice provides cross-controller behavior but does
+not inherently serialize every handler return value. With it,
+handlers commonly need @ResponseBody or may participate in
+view rendering. @RestControllerAdvice is convenient for JSON
+REST APIs.
+
+
+Q3. What does @ExceptionHandler do?
+
+Answer:
+It associates a method with one or more exception types.
+Spring selects the most appropriate handler when such an
+exception escapes controller request processing.
+
+
+Q4. What is MethodArgumentNotValidException?
+
+Answer:
+It is raised by Spring MVC when validation of a resolved method
+argument, such as an @Valid @RequestBody DTO, fails. Its
+BindingResult contains field and global validation errors.
+
+
+Q5. How does @Valid trigger validation?
+
+Answer:
+Spring deserializes the request body, invokes Jakarta Bean
+Validation on the DTO, and checks the resulting BindingResult.
+If constraint violations exist, normal controller execution is
+stopped and Spring raises MethodArgumentNotValidException.
+
+
+Q6. Why return validation errors field-wise?
+
+Answer:
+Clients can associate each message with the exact input field,
+display useful feedback, and handle errors programmatically
+without parsing one large string.
+
+
+Q7. Why should controllers not catch every exception?
+
+Answer:
+Repeated try/catch blocks duplicate status and body
+construction, create inconsistent responses, obscure the
+successful flow, and make error policy difficult to change.
+
+
+Q8. What should a basic API error response contain?
+
+Answer:
+It should contain a timestamp, HTTP status, safe summary
+message, request path, and structured details where relevant.
+Production systems often add a stable error code and
+correlation ID.
+
+
+Q9. Should stack traces be returned to clients?
+
+Answer:
+No. They can expose code structure, libraries, queries, paths,
+and sensitive data. Detailed diagnostics belong in protected
+server logs.
+
+
+============================================================
+2. INTERMEDIATE QUESTIONS
+============================================================
+
+Q1. Why use getBindingResult() in the validation handler?
+
+Answer:
+It is the current Spring MVC API for accessing the complete
+binding and validation result. It exposes field errors and
+global object errors without relying on outdated APIs.
+
+
+Q2. Why map each validation field to List<String>?
+
+Answer:
+A field can fail multiple constraints. A list preserves every
+message. A Map<String, String> would overwrite earlier errors
+for the same field.
+
+
+Q3. What are global validation errors?
+
+Answer:
+They are object-level failures not owned by one field, often
+produced by cross-field validation. FoodSaver groups them under
+the reserved `_global` key.
+
+
+Q4. Why return an empty errors object for a not-found error?
+
+Answer:
+The schema remains predictable because clients always receive
+the errors field. An empty map accurately means no field-level
+details apply and is clearer than null.
+
+
+Q5. How is RestaurantNotFoundException handled?
+
+Answer:
+The advice returns 404 Not Found, copies the exception's safe
+message, includes the failing request path and timestamp, and
+returns an empty errors map.
+
+
+Q6. Why does RestaurantNotFoundException not use
+@ResponseStatus?
+
+Answer:
+Keeping HTTP mapping in the advice prevents the service
+exception from being coupled to REST. The same service can be
+used from jobs, messaging, or another interface.
+
+
+Q7. Why use Instant for the timestamp?
+
+Answer:
+Instant represents an unambiguous UTC point suitable for
+correlating API responses with server logs across timezones.
+
+
+Q8. Why implement ErrorResponse as a Java record?
+
+Answer:
+It is an immutable data carrier with a fixed response shape.
+Java supplies the constructor and accessors without mutable
+entity-style behavior.
+
+
+Q9. Why include the request path?
+
+Answer:
+It identifies which API operation failed and helps correlate
+the response with routing and logs without exposing server
+filesystem paths.
+
+
+Q10. Why use ResponseEntity in exception handlers?
+
+Answer:
+It makes the selected HTTP status and ErrorResponse body
+explicit and testable. Headers can also be added later without
+changing the response model.
+
+
+============================================================
+3. ADVANCED QUESTIONS
+============================================================
+
+Q1. How should APIs generally map 400, 404, 409 and 500
+errors?
+
+Answer:
+Use 400 for invalid client input, 404 when the addressed
+resource does not exist, 409 for a defined conflict with
+current state or concurrency rules, and 500 for unexpected
+server failures. Mapping must follow specific exception
+semantics rather than broad guessing.
+
+
+Q2. Should a generic Exception handler always be added?
+
+Answer:
+Not automatically. It must safely log unexpected failures,
+preserve specific framework behavior, and return only a generic
+message. Adding it without observability can hide defects.
+
+
+Q3. Why should raw database exceptions not be returned?
+
+Answer:
+They can expose table names, constraints, queries, schema
+details, driver information, and data. Persistence failures
+should be translated into defined application errors.
+
+
+Q4. How should duplicate-data conflicts evolve?
+
+Answer:
+Identify the relevant constraint or domain conflict, return a
+safe 409 ErrorResponse, and never return the raw
+DataIntegrityViolationException message.
+
+
+Q5. How should optimistic-lock conflicts be represented?
+
+Answer:
+A stale update can return 409 Conflict with a stable error code
+and guidance to reload current state. That contract should be
+designed with version or ETag-based updates.
+
+
+Q6. How should an unexpected 500 error be handled?
+
+Answer:
+Log the complete exception server-side with a correlation ID,
+return a generic ErrorResponse, record metrics, and alert when
+appropriate. Do not expose implementation details.
+
+
+Q7. Is a timestamp enough for distributed tracing?
+
+Answer:
+No. Production systems should add and propagate a correlation
+or trace identifier through responses, logs, downstream calls,
+and messages.
+
+
+Q8. How would error responses support localization?
+
+Answer:
+Add stable machine-readable codes and resolve human-readable
+messages through MessageSource and the request locale. Clients
+should not depend on translated text for control flow.
+
+
+Q9. What Spring Boot 4 / Spring Framework 7 compatibility
+concern applies here?
+
+Answer:
+Use current APIs such as
+MethodArgumentNotValidException.getBindingResult(), Jakarta
+Servlet types, and current ResponseEntity methods. Avoid legacy
+javax imports and outdated validation-access patterns.
+
+
+============================================================
+4. APPROXIMATELY 3-YEAR EXPERIENCE QUESTIONS
+============================================================
+
+Q1. How would you design production-grade global exception
+handling?
+
+Answer:
+Define one stable error contract, map understood exceptions to
+correct statuses, preserve all validation errors, add stable
+codes and correlation IDs, log unexpected errors safely,
+support observability and localization, and verify behavior
+with MVC integration tests.
+
+
+Q2. How would you test GlobalExceptionHandler?
+
+Answer:
+Use MVC tests that submit an invalid request and request a
+missing resource. Assert status, content type, timestamp,
+message, path, every field-error list, global errors, and the
+absence of stack traces and internal details.
+
+
+Q3. How would you evolve the handler across multiple modules?
+
+Answer:
+Keep one shared ErrorResponse, add focused handlers for
+understood application exceptions, use stable error codes,
+centralize safe logging and correlation, and avoid
+module-specific response shapes without a clear need.
+
+
+Q4. What is the difference between validation and binding
+errors?
+
+Answer:
+Validation errors come from constraints on a successfully
+bound object. Binding errors can occur while converting input
+into target Java types. They may be represented by different
+Spring exceptions and need separate safe mappings.
+
+
+Q5. Does MethodArgumentNotValidException cover malformed JSON?
+
+Answer:
+No. Malformed JSON commonly raises
+HttpMessageNotReadableException before Bean Validation. It
+requires a separate 400 handler.
+
+
+Q6. Does it cover an invalid UUID path variable?
+
+Answer:
+No. UUID conversion can fail before controller or service
+execution and is represented by a conversion-related
+exception. It requires its own safe 400 mapping.
+
+
+Q7. How do you prevent handlers from exposing sensitive data?
+
+Answer:
+Return allow-listed response fields, use safe application
+messages, never serialize raw exceptions, redact logs, restrict
+log access, and test responses for stack traces, SQL, secrets,
+and request payload leakage.
+
+
+============================================================
+5. SCENARIO-BASED AND FOLLOW-UP QUESTIONS
+============================================================
+
+Q1. A request fails both @NotBlank and @Size for one field.
+How do you prevent losing one message?
+
+Answer:
+Collect errors into Map<String, List<String>> and append each
+message with computeIfAbsent rather than replacing a string.
+
+
+Q2. A cross-field constraint fails without one owning field.
+Where should the message go?
+
+Answer:
+Place it under a documented global key such as `_global`, while
+field-specific failures remain under their field names.
+
+
+Q3. A database unique constraint fails. Should the raw message
+be returned?
+
+Answer:
+No. Translate the understood conflict to a safe 409 response.
+Log protected diagnostics server-side without exposing schema
+details.
+
+
+Q4. A NullPointerException reaches the advice. What should a
+production handler do?
+
+Answer:
+Return a generic 500 response, log the full exception with a
+correlation ID, emit metrics, and avoid revealing the exception
+message or stack trace.
+
+
+Q5. Validation fails for the timezone helper property. What
+key does the API return?
+
+Answer:
+Because validation is attached to `isTimezoneValid()`, Bean
+Validation reports `timezoneValid`. GlobalExceptionHandler
+normalizes that known implementation-level key to the
+client-facing request field `timezone`.
+
+Possible follow-up:
+Why normalize the key in the exception handler?
+
+Follow-up answer:
+The API contract should use the request field name clients
+submitted, while the validation method name remains an internal
+implementation detail. The remapping is deliberately narrow so
+other field and global errors are unchanged.
+
+
+Q6. Why might broad catch-all handling be risky?
+
+Answer:
+It can hide programming errors, override useful framework
+statuses, return misleading responses, and suppress essential
+logging. Specific handlers should be preferred for understood
+conditions.
+
+
+============================================================
+6. TRICKY QUESTIONS
+============================================================
+
+Q1. Does @RestControllerAdvice catch every exception in the
+entire JVM?
+
+Answer:
+No. It participates in Spring MVC exception resolution for web
+requests. Exceptions in background jobs, message consumers, or
+unrelated threads require their own handling boundaries.
+
+
+Q2. Does returning 400 for every RuntimeException make an API
+client-friendly?
+
+Answer:
+No. It misclassifies server defects and business conflicts as
+bad client input. Status mapping must reflect actual semantics.
+
+
+Q3. Is an exception message always safe to return?
+
+Answer:
+No. Only messages deliberately designed for clients should be
+returned. Infrastructure and unexpected exception messages can
+contain sensitive details.
+
+
+Q4. Does @Valid validate the request before JSON parsing?
+
+Answer:
+No. JSON must first be deserialized into the target object.
+Malformed JSON can fail before Bean Validation runs.
+
+
+Q5. Does an immutable ErrorResponse make nested collections
+deeply immutable?
+
+Answer:
+Not automatically. A record makes its component references
+final, but mutable maps or lists can still be changed through
+existing references. Defensive copies may be appropriate if
+the response is shared or mutated after construction.
