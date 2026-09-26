@@ -111,7 +111,7 @@ Do not return unnecessary implementation details.
 
 For every meaningful implementation step, update:
 
-docs/restaurant-management/restaurant-management.md
+docs/restaurant-management.md
 
 The documentation should explain:
 
@@ -134,7 +134,7 @@ Explain the reasoning behind the code.
 
 Maintain:
 
-interview/restaurant-management/restaurant-interview-questions.txt
+interview/restaurant-management-interview-questions.txt
 
 For every important concept introduced in the module, add
 interview questions.
