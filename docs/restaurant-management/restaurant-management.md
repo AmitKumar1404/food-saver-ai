@@ -14,7 +14,7 @@ This module provides the restaurant identity that later modules can reference:
 - Customer Ordering
 - AI Agents
 
-The implemented foundation now includes the `Restaurant` JPA entity, its enums, repository, request/response DTOs, and service layer. No controller, global exception handler, security component, or database migration has been implemented yet.
+The implemented foundation now includes the `Restaurant` JPA entity, its enums, repository, request/response DTOs, service layer, and REST controller. No global exception handler, security component, or database migration has been implemented yet.
 
 ### Scope boundary
 
@@ -263,28 +263,29 @@ Allowed transitions must be defined in service-layer policy rather than inferred
 
 ---
 
-## 7. Future API Requirements
+## 7. REST API
 
-The following endpoints describe the eventual contract. They are not implemented.
+The initial controller implements the three current-phase endpoints. Update, status-change, and delete operations remain deferred.
 
-| Method | Proposed endpoint | Purpose | Expected access |
+| Method | Endpoint | Current behavior | Status |
 | --- | --- | --- | --- |
-| `POST` | `/api/v1/restaurants` | Register a restaurant profile | Authenticated onboarding actor or controlled public onboarding |
-| `GET` | `/api/v1/restaurants/{publicId}` | Retrieve an authorized management view | Restaurant member or administrator |
-| `GET` | `/api/v1/restaurants` | Paginated administrative search/filter | Administrator |
-| `PATCH` | `/api/v1/restaurants/{publicId}` | Partially update editable profile fields | Authorized restaurant member |
-| `PATCH` | `/api/v1/restaurants/{publicId}/status` | Execute an explicit lifecycle transition | Administrator, except future self-deactivation policy |
+| `POST` | `/api/v1/restaurants` | Validate and create a restaurant | Implemented |
+| `GET` | `/api/v1/restaurants/{publicId}` | Retrieve a restaurant by public UUID | Implemented |
+| `GET` | `/api/v1/restaurants` | Retrieve all restaurants | Implemented for the current phase; pagination deferred |
+| `PATCH` | `/api/v1/restaurants/{publicId}` | Partially update editable profile fields | Deferred |
+| `PATCH` | `/api/v1/restaurants/{publicId}/status` | Execute an authorized lifecycle transition | Deferred |
+| `DELETE` | `/api/v1/restaurants/{publicId}` | Deactivate/delete according to a defined retention policy | Deferred |
 
 ### API behavior
 
-- `POST` should return `201 Created` and a `Location` header.
-- Successful reads should return `200 OK`.
+- `POST` returns `201 Created` with `RestaurantResponse` in the body. A `Location` header is not added in this phase.
+- Both successful `GET` operations return `200 OK`.
 - A successful profile update should return `200 OK` with the updated response or `204 No Content`; the implementation must choose one consistently.
 - Invalid input should return `400 Bad Request` with field-level errors.
-- Missing records should return `404 Not Found`.
+- Missing records currently propagate `RestaurantNotFoundException`; mapping it to `404 Not Found` is deferred to the global exception-handling phase.
 - Duplicate constrained values or stale optimistic-lock updates should return `409 Conflict`.
 - Authentication and authorization failures should use `401 Unauthorized` and `403 Forbidden` appropriately after security is introduced.
-- List responses must be paginated, have a maximum page size, use a deterministic secondary sort, and avoid leaking private fields.
+- The current list response is intentionally unpaginated to match the current service contract. Pagination, maximum page size, deterministic sorting, and filtering are required before production-scale use.
 - Status changes should use a dedicated request contract and service operation, not a general profile update.
 - Hard deletion is intentionally omitted from the initial API.
 
@@ -353,8 +354,9 @@ No validation in this module should infer food safety from restaurant type, stat
 - `backend/src/main/java/com/foodsaver/service/RestaurantService.java`
 - `backend/src/main/java/com/foodsaver/service/impl/RestaurantServiceImpl.java`
 - `backend/src/main/java/com/foodsaver/exception/RestaurantNotFoundException.java`
+- `backend/src/main/java/com/foodsaver/controller/RestaurantController.java`
 
-The module now follows the intended entity, enum, repository, DTO, service, service implementation, and exception package boundaries. Mapping currently remains private to the service implementation; no standalone mapper, controller, global exception handling, security, messaging, caching, AI, or food-safety logic has been introduced.
+The module now follows the intended entity, enum, repository, DTO, service, service implementation, exception, and controller package boundaries. Mapping currently remains private to the service implementation; no standalone mapper, global exception handling, security, messaging, caching, AI, or food-safety logic has been introduced.
 
 ### 9.2 Core JPA mapping
 
@@ -501,7 +503,47 @@ No update mapping was added. `RestaurantRequest` has create/full-update validati
 
 The annotations are placed on the implementation where Spring executes the methods. They are not added blindly to private mapping helpers, which do not define independent transactional units.
 
-### 9.9 Remaining layers
+### 9.9 Controller implementation
+
+`RestaurantController` is marked with `@RestController` and uses the class-level base path `@RequestMapping("/api/v1/restaurants")`. It handles only HTTP concerns: request binding, request validation, path-variable conversion, delegation to `RestaurantService`, and explicit response status/body construction.
+
+The controller receives `RestaurantService` through an explicit constructor and stores it in a `final` field. It does not use field injection or `@Autowired`. It depends on the service abstraction and never accesses `RestaurantRepository` directly, keeping transaction and application behavior out of the HTTP layer.
+
+#### POST `/api/v1/restaurants`
+
+- `@PostMapping` uses the class-level base path.
+- `@RequestBody` deserializes JSON into `RestaurantRequest`.
+- `@Valid` triggers Jakarta Bean Validation before the service is invoked.
+- The controller delegates to `restaurantService.createRestaurant(request)`.
+- `ResponseEntity.status(HttpStatus.CREATED).body(response)` returns `201 Created` and the created `RestaurantResponse`.
+- The request DTO contains no internal `id`, `publicId`, status, version, or audit timestamps, and the controller does not generate or accept them separately.
+
+Validation rules remain in `RestaurantRequest`; the controller does not duplicate them. If validation fails, Spring MVC raises its standard validation exception before entering the method body. A consistent validation-error response will be defined with the deferred global exception handler.
+
+#### GET `/api/v1/restaurants/{publicId}`
+
+- `@GetMapping("/{publicId}")` binds the route.
+- `@PathVariable("publicId") UUID publicId` uses Spring conversion from the path segment to `UUID`.
+- The controller delegates to `restaurantService.getRestaurantByPublicId(publicId)`.
+- `ResponseEntity.ok(response)` returns `200 OK`.
+
+`RestaurantNotFoundException` is intentionally not caught in the controller. It propagates until the global HTTP exception strategy is implemented.
+
+#### GET `/api/v1/restaurants`
+
+- `@GetMapping` uses the class-level base path.
+- The controller delegates to `restaurantService.getAllRestaurants()`.
+- `ResponseEntity.ok(responses)` returns `200 OK` with `List<RestaurantResponse>`.
+
+This endpoint currently has no pagination, sorting, or filtering because those capabilities are outside this implementation step. They remain required before production-scale exposure.
+
+#### Separation of responsibilities
+
+The controller contains no entity mapping, persistence access, transaction handling, identifier generation, lifecycle decisions, or exception-catching boilerplate. Those responsibilities belong to DTO validation, the service/entity layers, repositories, and the future centralized error handler. This separation keeps HTTP code small and makes business behavior reusable outside REST.
+
+No PATCH, DELETE, status-change, authentication, authorization, Swagger/OpenAPI, global exception handler, or integration-specific endpoint was introduced.
+
+### 9.10 Remaining layers
 
 The remaining implementation must continue to follow the project package structure:
 
@@ -517,7 +559,7 @@ exception
 config
 ```
 
-No mapper, controller, global exception handler, security, configuration, messaging, caching, or AI class was added in this step.
+No mapper, global exception handler, security, configuration, messaging, caching, or AI class was added in this step.
 
 ---
 
@@ -525,7 +567,7 @@ No mapper, controller, global exception handler, security, configuration, messag
 
 `RestaurantNotFoundException` is implemented as the minimal service-level failure for a missing public ID. It extends `RuntimeException`, allowing the active transaction to follow Spring's normal rollback rules without forcing repository or interface callers to declare a checked exception.
 
-The future HTTP layer should integrate this and other application failures with centralized `@RestControllerAdvice` handling rather than duplicating `try/catch` blocks in controllers. No HTTP status annotation or global handler is added yet because the HTTP error contract remains a separate design step.
+The controller currently allows this and other application failures to propagate. A future centralized `@RestControllerAdvice` should map them without duplicating `try/catch` blocks in controller methods. No HTTP status annotation or global handler is added yet because the HTTP error contract remains a separate design step.
 
 Expected error categories include:
 
@@ -544,7 +586,7 @@ An error response should contain a stable machine-readable code, safe human-read
 
 ## 11. Testing and Validation
 
-No new test class was added because this step was limited to service implementation and documentation.
+No new test class was added because this step was limited to controller implementation and documentation.
 
 Validation performed:
 
@@ -554,6 +596,7 @@ Validation performed:
 - After adding `RestaurantRepository`, `mvn clean compile` completed successfully and compiled five source files.
 - After adding the request and response DTOs, `mvn clean compile` completed successfully and compiled seven source files.
 - After adding the service interface, implementation, and minimal not-found exception, `mvn clean compile` completed successfully and compiled ten source files.
+- After adding `RestaurantController`, `./mvnw clean compile` completed successfully and compiled eleven source files.
 
 Future implementation should include:
 

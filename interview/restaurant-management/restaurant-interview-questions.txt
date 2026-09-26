@@ -14,8 +14,8 @@ Requirements and database design completed. The Restaurant JPA
 entity, BusinessType/RestaurantStatus enums, and
 RestaurantRepository are implemented. Restaurant request and
 response DTOs and the Restaurant service layer are also
-implemented. The controller and HTTP exception mapping have
-not started.
+implemented. The initial Restaurant REST controller is
+implemented; global HTTP exception mapping has not started.
 
 
 ============================================================
@@ -1602,3 +1602,306 @@ Introduce a paginated service/repository contract,
 deterministic sorting, maximum page sizes, authorization,
 appropriate response projections, and tests for query and
 mapping behavior.
+
+
+============================================================
+12. REST CONTROLLER QUESTIONS
+============================================================
+
+Q1. What does @RestController do?
+
+Answer:
+@RestController combines @Controller and @ResponseBody. Spring
+discovers the class as an MVC component and serializes method
+return values into the HTTP response body, usually as JSON.
+
+Possible follow-up:
+How is it different from @Controller?
+
+Follow-up answer:
+@Controller is commonly used for MVC views unless individual
+methods use @ResponseBody. @RestController applies response-body
+semantics to every handler method.
+
+
+Q2. Why is @RequestMapping placed at class level?
+
+Answer:
+It defines the shared `/api/v1/restaurants` base path once.
+Method-level mappings then describe only their operation-
+specific path and HTTP method.
+
+
+Q3. Why include `/api/v1` in the endpoint?
+
+Answer:
+Path versioning creates an explicit API compatibility boundary.
+It allows a future incompatible contract to use another
+version while existing clients continue using v1.
+
+
+Q4. What does @PostMapping represent?
+
+Answer:
+It maps HTTP POST requests to a handler method. POST is
+appropriate for creating a new subordinate restaurant resource
+when the server controls its identifiers.
+
+
+Q5. What does @GetMapping represent?
+
+Answer:
+It maps HTTP GET requests to a handler method. GET should be
+safe and read-only from the client's perspective.
+
+
+Q6. What does @RequestBody do?
+
+Answer:
+It asks Spring MVC to deserialize the request body into the
+declared Java DTO using a configured HTTP message converter,
+typically Jackson for JSON.
+
+Possible follow-up:
+Does @RequestBody automatically validate the DTO?
+
+Follow-up answer:
+No. @Valid or @Validated is needed to trigger Bean Validation.
+
+
+Q7. What does @Valid do on RestaurantRequest?
+
+Answer:
+It triggers Jakarta Bean Validation after JSON binding and
+before the controller invokes the service. Invalid input causes
+Spring MVC to raise a validation exception rather than execute
+the method body normally.
+
+
+Q8. Why should validation rules not be repeated in the
+controller?
+
+Answer:
+The request DTO is the boundary contract and central place for
+field constraints. Repeating rules in handlers creates
+inconsistency, clutter, and harder testing.
+
+
+Q9. What does @PathVariable do?
+
+Answer:
+It binds a path-template value to a controller parameter. In
+`/{publicId}`, Spring converts the path text into the declared
+UUID parameter before invoking the method.
+
+Possible follow-up:
+What happens for a malformed UUID?
+
+Follow-up answer:
+Type conversion fails before normal service execution. The
+future global exception strategy should return a consistent
+client-error response.
+
+
+Q10. Why specify @PathVariable("publicId") explicitly?
+
+Answer:
+It makes the connection to the URI template explicit and does
+not depend on Java parameter-name discovery settings.
+
+
+Q11. What is ResponseEntity?
+
+Answer:
+ResponseEntity represents the complete HTTP response,
+including status, headers, and body. It makes controller status
+decisions explicit.
+
+
+Q12. Why does POST return 201 instead of 200?
+
+Answer:
+201 Created communicates that the request successfully created
+a new resource. 200 OK is a general success status and is used
+for the implemented read operations.
+
+Possible follow-up:
+Should a 201 response contain a Location header?
+
+Follow-up answer:
+It is a strong REST practice to provide the new resource URI.
+The current requirement mandates the response body and 201;
+Location-header construction is deferred rather than invented.
+
+
+Q13. Why do GET operations return 200 OK?
+
+Answer:
+They successfully return the requested representation or
+collection without creating a new resource.
+
+
+Q14. Why does RestaurantController depend on
+RestaurantService rather than RestaurantServiceImpl?
+
+Answer:
+The controller depends on the service contract, which reduces
+coupling to implementation details and follows dependency
+inversion within the layered architecture.
+
+
+Q15. Why must the controller not access RestaurantRepository
+directly?
+
+Answer:
+Direct repository access would bypass service-level
+transactions, mapping, not-found behavior, and business rules.
+It also couples HTTP handling to persistence details.
+
+
+Q16. Why should business logic not be placed in a controller?
+
+Answer:
+Controllers should handle HTTP concerns and delegate use
+cases. Business logic in controllers is difficult to reuse,
+mixes responsibilities, and makes both HTTP and business tests
+more complicated.
+
+
+Q17. How is RestaurantService injected into the controller?
+
+Answer:
+It is stored in a final field and supplied through the
+controller's only constructor. Spring automatically uses that
+constructor; no field injection or @Autowired is required.
+
+
+Q18. Why is constructor injection useful in controller tests?
+
+Answer:
+A test can instantiate the controller directly with a mock or
+stub service. There is no need for reflection or a full Spring
+context merely to supply the dependency.
+
+
+Q19. Should controller methods catch
+RestaurantNotFoundException?
+
+Answer:
+No. Repetitive local try/catch blocks would duplicate HTTP
+error mapping. The exception should propagate to a future
+centralized @RestControllerAdvice.
+
+
+Q20. What HTTP status should a missing restaurant eventually
+produce?
+
+Answer:
+The expected REST status is 404 Not Found, but the global
+mapping is deliberately deferred. The service exception itself
+does not yet define an HTTP status.
+
+
+Q21. What happens when RestaurantRequest validation fails?
+
+Answer:
+The service is not invoked. Spring MVC raises its validation
+exception, and the framework currently handles it. A future
+global handler should produce the project's standardized field-
+error response.
+
+
+Q22. Does the controller expose the internal database ID?
+
+Answer:
+No. It returns RestaurantResponse, which contains publicId but
+has no internal id or version field.
+
+
+Q23. Why does the POST controller not generate publicId?
+
+Answer:
+Identifier generation belongs to the entity persistence
+lifecycle. The controller only validates HTTP input and
+delegates creation to the service.
+
+
+Q24. Is returning all restaurants without pagination
+production-ready?
+
+Answer:
+No. It matches the current phase requirement but can become
+expensive as data grows. The API and service need pagination,
+bounded page sizes, and deterministic sorting before
+production-scale use.
+
+
+Q25. Why were filtering and sorting not added now?
+
+Answer:
+They require an explicit API contract and corresponding
+service/repository design. Adding ad hoc query parameters in
+the controller would exceed the requested scope and bypass
+incremental design.
+
+
+Q26. Why is PATCH not implemented with RestaurantRequest?
+
+Answer:
+RestaurantRequest requires full creation data. PATCH needs to
+distinguish omitted fields from explicit null values and should
+use a dedicated partial-update contract.
+
+
+Q27. Why is there no status-change endpoint?
+
+Answer:
+Status transitions require authorization, allowed-transition
+rules, and auditing that are not defined yet. Exposing the
+operation now would create a security-sensitive gap.
+
+
+Q28. How would you test RestaurantController?
+
+Answer:
+Use a focused Spring MVC test with a mocked RestaurantService.
+Verify routing, JSON binding, @Valid behavior, service
+delegation, response bodies, 201 for creation, and 200 for
+reads. Not-found and standardized validation responses should
+be tested when global exception handling is implemented.
+
+
+Q29. What is the difference between a controller unit test and
+an MVC slice test?
+
+Answer:
+A unit test calls the controller directly and checks delegation
+and ResponseEntity values. An MVC slice test exercises Spring
+MVC routing, conversion, validation, and serialization while
+mocking unrelated application layers.
+
+
+Q30. Should @Transactional be placed on controller methods?
+
+Answer:
+No in this design. Transaction boundaries belong to service
+use cases. Putting them in controllers couples persistence
+lifetime to HTTP handling and can keep transactions open during
+unrelated serialization work.
+
+
+Q31. Is @Valid sufficient security for the POST endpoint?
+
+Answer:
+No. Validation checks input shape and constraints. It does not
+authenticate the caller, authorize restaurant creation, prevent
+abuse, or replace rate limiting. Those controls are deferred.
+
+
+Q32. What REST concerns remain deferred?
+
+Answer:
+Centralized error responses, 404 mapping, Location headers,
+pagination, sorting, filtering, authentication, authorization,
+OpenAPI documentation, rate limiting, and controller tests
+remain future work.
