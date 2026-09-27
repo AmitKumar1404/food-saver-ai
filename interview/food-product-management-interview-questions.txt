@@ -1,0 +1,359 @@
+FOOD/PRODUCT MANAGEMENT INTERVIEW QUESTIONS
+
+A. PRODUCT MANAGEMENT FUNDAMENTALS
+
+1. What does Product represent in FoodSaver AI?
+Answer:
+Product represents a restaurant catalog or menu item. It stores descriptive
+data, category, base price, currency, and status.
+
+2. What is the difference between Product and Inventory?
+Answer:
+Product describes what can be offered. Inventory would track changing stock
+facts such as quantity, availability, expiry, and surplus units. Inventory is
+not implemented in the current Product module.
+
+3. What is the relationship between Restaurant and Product?
+Answer:
+It is a one-to-many domain relationship: one Restaurant can own many Products,
+and every Product belongs to one required Restaurant.
+
+Follow-up: Why is there no Product collection in Restaurant?
+Answer:
+The current model uses a unidirectional Product-to-Restaurant relationship to
+avoid an unnecessary bidirectional association and collection-management
+complexity.
+
+4. Which operations does the current Product API support?
+Answer:
+Create, get one, full update, and hard delete. List, PATCH, inventory, offers,
+orders, security, and AI behavior are not part of the current module.
+
+
+B. ENTITY AND DATABASE DESIGN
+
+5. Why use an internal Long id and a public UUID?
+Answer:
+Long is efficient for database identity and relationships. UUID provides a
+non-sequential external identifier so API clients do not depend on or easily
+enumerate internal database keys.
+
+6. Why should the internal id not be exposed through ProductResponse?
+Answer:
+It is a persistence implementation detail. Exposing it couples clients to the
+database design and can make resource enumeration easier.
+
+7. How is Product linked to Restaurant in JPA?
+Answer:
+Product uses a required @ManyToOne association with a non-null restaurant_id
+join column.
+
+8. Why is Product.restaurant configured with FetchType.LAZY?
+Answer:
+LAZY loading avoids fetching Restaurant data whenever a Product is loaded
+unless that association is actually needed within the persistence context.
+
+Follow-up: What risk exists with LAZY associations?
+Answer:
+Accessing an uninitialized association outside an active persistence context
+can cause LazyInitializationException. Mapping should occur inside the service
+transaction or use an intentional fetch strategy.
+
+9. Why use EnumType.STRING for category and status?
+Answer:
+String values remain readable and do not depend on enum ordinal positions.
+Reordering enum constants therefore does not corrupt persisted meaning.
+
+10. Why is BigDecimal used for basePrice?
+Answer:
+BigDecimal provides decimal precision suitable for monetary values and avoids
+the binary floating-point rounding behavior of float and double.
+
+Follow-up: Is BigDecimal alone enough for complete money modeling?
+Answer:
+No. Currency, scale, rounding policy, and business rules are also important.
+The current model stores basePrice with a separate three-character
+currencyCode.
+
+11. Which indexes exist on the products table?
+Answer:
+There is a unique constraint on public_id and indexes on
+(restaurant_id, status) and (restaurant_id, category).
+
+
+C. DTO AND VALIDATION
+
+12. Why use request and response DTOs instead of exposing Product directly?
+Answer:
+DTOs define the API contract, isolate persistence details, apply input
+validation, prevent unsafe field binding, and avoid exposing internal fields or
+JPA relationships.
+
+13. Why are ProductCreateRequest and ProductUpdateRequest separate classes?
+Answer:
+Create and update are distinct API contracts and may evolve independently.
+The current classes use the same editable fields and validation, but keeping
+them separate prevents future create-only or update-only rules from changing
+both contracts accidentally.
+
+14. What does @Valid do in ProductController?
+Answer:
+It triggers Jakarta Bean Validation for the request DTO before the controller
+method proceeds. Validation failures are handled centrally as HTTP 400.
+
+15. What are the current Product request validation rules?
+Answer:
+Name is required, non-blank, and at most 150 characters. Description is
+optional and at most 1000 characters. Category is required. Base price is
+required and greater than zero. Currency code is required, non-blank, and
+exactly three characters.
+
+16. Why should validation annotations not be duplicated in the service?
+Answer:
+DTO annotations define API input constraints in one place. Duplicating the
+same rules creates maintenance risk. Services can still enforce business rules
+that annotations cannot represent.
+
+
+D. REST API DESIGN
+
+17. Why are Product endpoints nested under Restaurant?
+Answer:
+The URL expresses ownership and provides restaurant context for every Product
+operation:
+/api/v1/restaurants/{restaurantPublicId}/products
+
+18. Which status codes do the current endpoints return on success?
+Answer:
+POST returns 201 Created, GET returns 200 OK, PUT returns 200 OK, and DELETE
+returns 204 No Content.
+
+19. Why does the update endpoint use PUT?
+Answer:
+ProductUpdateRequest requires the complete set of editable fields, so the
+operation represents a full replacement of the editable Product state.
+
+20. What is the difference between PUT and PATCH?
+Answer:
+PUT generally replaces the complete resource or complete editable
+representation and is expected to be idempotent. PATCH applies partial changes
+and needs explicit partial-update semantics, which are not implemented here.
+
+21. Why use ResponseEntity?
+Answer:
+It makes the HTTP status and response-body contract explicit, including 201
+for creation and 204 with no body for deletion.
+
+
+E. JPA / HIBERNATE
+
+22. What does @PrePersist do in Product?
+Answer:
+Before insertion it generates publicId when absent, defaults status to ACTIVE
+when absent, initializes createdAt when needed, and sets updatedAt.
+
+23. What does @PreUpdate do in Product?
+Answer:
+It refreshes updatedAt before an existing Product is updated.
+
+24. Why should the service not manually set id, publicId, version, or
+timestamps?
+Answer:
+Those values are generated or managed by the database, JPA, or entity lifecycle
+callbacks. Public setters are disabled for the system-managed entity fields.
+
+25. Why does the service call save during update even though JPA dirty checking
+could persist a managed entity?
+Answer:
+The current implementation uses save explicitly to make repository persistence
+intent clear and to follow the service contract. Within a transaction, dirty
+checking would normally also detect changes to the managed entity.
+
+
+F. OWNERSHIP ISOLATION
+
+26. What repository method enforces Product ownership?
+Answer:
+findByPublicIdAndRestaurantId(UUID publicId, Long restaurantId)
+
+27. Why not find a Product only by publicId?
+Answer:
+The nested API is scoped to a Restaurant. Querying by both identifiers makes
+ownership part of persistence lookup and prevents cross-restaurant access.
+
+28. How does the service perform an ownership-aware lookup?
+Answer:
+It first finds the Restaurant using restaurantPublicId, then queries Product
+using productPublicId and restaurant.getId().
+
+29. What happens when Product X belongs to Restaurant A but a request uses
+Restaurant B?
+Answer:
+The ownership-aware query finds no matching Product. GET, PUT, and DELETE then
+throw ProductNotFoundException and return HTTP 404.
+
+30. Why return 404 rather than revealing that the Product belongs elsewhere?
+Answer:
+The Product is not a resource under the requested Restaurant path. Returning
+404 also avoids disclosing cross-tenant resource existence. Authorization is
+still a separate future concern.
+
+
+G. TRANSACTION MANAGEMENT
+
+31. Why are create, update, and delete annotated with @Transactional?
+Answer:
+They are write operations whose lookup and persistence steps should execute in
+one atomic transaction.
+
+32. Why does getProduct use @Transactional(readOnly = true)?
+Answer:
+It communicates read-only intent and can allow persistence-provider or database
+optimizations while retaining a persistence context for mapping.
+
+33. Why is delete not marked readOnly?
+Answer:
+It changes database state. A read-only transaction is inappropriate for a
+delete operation.
+
+34. Why are transaction annotations placed at service level?
+Answer:
+The service defines the complete business operation and transaction boundary.
+Controllers handle HTTP concerns, while repositories handle individual
+persistence operations.
+
+
+H. EXCEPTION HANDLING
+
+35. How are Product validation failures returned?
+Answer:
+MethodArgumentNotValidException is handled centrally by
+GlobalExceptionHandler, which returns HTTP 400 with field-level errors.
+
+36. What happens when the Restaurant does not exist?
+Answer:
+The service throws RestaurantNotFoundException and the centralized handler
+returns HTTP 404.
+
+37. What happens when the Product is missing or belongs to another Restaurant?
+Answer:
+The service throws ProductNotFoundException and the centralized handler returns
+HTTP 404.
+
+38. Why should ProductController not catch these exceptions itself?
+Answer:
+Centralized handling keeps controllers focused, avoids repeated try/catch
+blocks, and produces a consistent ErrorResponse structure.
+
+
+I. DELETE API
+
+39. What is the Product DELETE endpoint?
+Answer:
+DELETE
+/api/v1/restaurants/{restaurantPublicId}/products/{productPublicId}
+
+40. Why does successful deletion return 204 No Content?
+Answer:
+Deletion succeeded and there is no representation to return. An HTTP 204
+response must not contain a response body.
+
+41. Why does the controller return ResponseEntity<Void>?
+Answer:
+Void explicitly models that the response has no body, while
+ResponseEntity.noContent().build() creates the 204 response.
+
+42. What is an ownership-aware delete?
+Answer:
+The service deletes only the Product found by the combination of Product public
+ID and owning Restaurant ID.
+
+43. Is the current deletion hard or soft?
+Answer:
+It is a hard delete using productRepository.delete(product). No status change
+or deleted flag is used.
+
+
+J. OPTIMISTIC LOCKING
+
+44. What does @Version do?
+Answer:
+It marks the version column used by JPA for optimistic locking. JPA includes
+the expected version when updating or deleting a versioned entity.
+
+45. What is optimistic locking?
+Answer:
+It detects conflicting concurrent modifications without holding a database
+lock for the entire user interaction. A write fails when the stored version no
+longer matches the version originally read.
+
+46. What happens if two transactions update the same Product concurrently?
+Answer:
+Both may read the same version, but the first successful update increments it.
+The second update then affects no row with its stale version and JPA raises an
+optimistic-locking exception.
+
+Follow-up: Does the current API have custom handling for that conflict?
+Answer:
+No custom optimistic-lock conflict mapping is documented in the current
+Product module. A production API could map it consistently, commonly to HTTP
+409 Conflict.
+
+
+K. PRODUCTION / SCENARIO-BASED QUESTIONS
+
+47. What problem can hard deletion cause when Inventory, Order, or Offer rows
+reference Product?
+Answer:
+Foreign-key constraints may block deletion, or deletion could remove data
+needed for history. The policy must be designed before those modules add
+references.
+
+48. How could deletion evolve when Product has historical references?
+Answer:
+Options include preventing deletion, changing status to INACTIVE, introducing
+auditable soft deletion, or retaining snapshots in historical records. The
+choice depends on business and compliance requirements.
+
+49. What would you improve before production?
+Answer:
+Add automated unit and integration tests, database migrations, authorization,
+consistent handling for malformed input and concurrency conflicts, observability,
+auditing where required, and explicit deletion/reference policies.
+
+50. How would authentication and authorization be added later?
+Answer:
+Spring Security could authenticate callers and enforce permissions before
+service operations. Ownership-aware queries should remain as defense in depth;
+they do not replace authorization.
+
+51. How could Kafka fit into Product Management later?
+Answer:
+After committed Product changes, domain events could inform search, analytics,
+inventory, or offer services. Reliable publication may use an outbox pattern.
+Kafka is not implemented in the current module.
+
+52. How could Redis fit later?
+Answer:
+Redis could cache frequently read Product representations or support other
+short-lived data. A production design would need cache keys scoped by
+Restaurant, TTLs, and invalidation after writes. Redis is not currently used.
+
+53. How could this module evolve for FoodSaver AI?
+Answer:
+Product remains the authoritative catalog model while future Inventory,
+surplus, offer, and agent modules consume controlled Product data. AI may make
+recommendations, but deterministic business and food-safety rules must remain
+authoritative.
+
+54. Should ProductStatus be treated as current stock availability?
+Answer:
+No. ProductStatus describes catalog activation. Inventory availability belongs
+in a future stock module and should not be inferred from ACTIVE or INACTIVE.
+
+55. How would you test ownership isolation?
+Answer:
+Create Product X for Restaurant A, then call GET, PUT, and DELETE using
+Restaurant B with Product X's public ID. Each request should return 404, and a
+subsequent request through Restaurant A should confirm that Product X remains
+unchanged after failed cross-restaurant writes.
