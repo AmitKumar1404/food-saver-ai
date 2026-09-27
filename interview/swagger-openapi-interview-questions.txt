@@ -1,0 +1,425 @@
+============================================================
+FOODSAVER AI - SWAGGER/OPENAPI INTERVIEW QUESTIONS
+============================================================
+
+Module:
+Swagger/OpenAPI Integration
+
+Purpose:
+Interview preparation from beginner to approximately
+3-year experience level.
+
+Current implementation:
+- SpringDoc OpenAPI WebMVC UI starter
+- OpenApiConfig with an OpenAPI @Bean
+- Basic API title, description, and version metadata
+- Swagger UI at http://localhost:8040/swagger-ui.html
+- OpenAPI JSON at http://localhost:8040/v3/api-docs
+- No OpenAPI security scheme
+- No controller-level Swagger annotations
+
+
+============================================================
+1. SWAGGER AND OPENAPI FUNDAMENTALS
+============================================================
+
+Q1. What is OpenAPI?
+
+Answer:
+OpenAPI is a language-independent specification for describing
+HTTP APIs. It defines paths, operations, parameters, request
+bodies, responses, schemas, security requirements, and API
+metadata in a machine-readable document.
+
+
+Q2. What is Swagger?
+
+Answer:
+Swagger commonly refers to a family of tools built around the
+OpenAPI Specification, such as Swagger UI and Swagger Editor.
+Historically, the specification itself was called Swagger
+Specification before it became the OpenAPI Specification.
+
+
+Q3. What is the difference between Swagger and OpenAPI?
+
+Answer:
+OpenAPI is the API-description standard. Swagger is a tooling
+ecosystem that reads, edits, renders, or generates artifacts
+from OpenAPI documents.
+
+
+Q4. What is Swagger UI?
+
+Answer:
+Swagger UI is a browser application that renders an OpenAPI
+document as interactive documentation and can send requests to
+the described API.
+
+
+Q5. What is an OpenAPI document?
+
+Answer:
+It is a JSON or YAML representation of an API contract,
+including metadata, endpoints, HTTP methods, parameters,
+schemas, responses, and optional security definitions.
+
+
+Q6. Why is OpenAPI useful for FoodSaver AI?
+
+Answer:
+It makes the Restaurant and Product APIs discoverable, provides
+request and response schemas, enables interactive testing, and
+creates a standard contract for developers and future tooling.
+
+
+============================================================
+2. SPRINGDOC AND SPRING BOOT
+============================================================
+
+Q7. What is SpringDoc?
+
+Answer:
+SpringDoc is a library that inspects Spring web applications
+and generates an OpenAPI document. Its UI starter also serves
+Swagger UI.
+
+
+Q8. Which dependency is used in the current project?
+
+Answer:
+The project uses:
+org.springdoc:springdoc-openapi-starter-webmvc-ui:3.1.1
+
+
+Q9. Why is the WebMVC SpringDoc starter appropriate here?
+
+Answer:
+The backend uses Spring MVC. The WebMVC UI starter integrates
+with Spring MVC controllers and includes Swagger UI support.
+
+
+Q10. How does SpringDoc discover endpoints?
+
+Answer:
+It inspects Spring MVC mappings, controller methods, parameters,
+request and response types, validation metadata, and optional
+OpenAPI annotations to build the OpenAPI model.
+
+
+Q11. Does SpringDoc replace Spring MVC?
+
+Answer:
+No. Spring MVC still handles HTTP requests. SpringDoc observes
+the application model and publishes documentation for it.
+
+
+Q12. What should be checked when using SpringDoc with a new
+Spring Boot major version?
+
+Answer:
+Check the SpringDoc compatibility matrix, use the correct
+starter for WebMVC or WebFlux, compile and start the
+application, and verify both /v3/api-docs and Swagger UI.
+
+
+============================================================
+3. OPENAPI CONFIGURATION
+============================================================
+
+Q13. What does @Configuration mean on OpenApiConfig?
+
+Answer:
+It marks the class as a source of Spring bean definitions so
+Spring can discover and process its @Bean methods.
+
+
+Q14. What does @Bean do in OpenApiConfig?
+
+Answer:
+It registers the returned OpenAPI object in the Spring
+application context. SpringDoc uses that bean to customize the
+generated API-level metadata.
+
+
+Q15. What metadata is currently configured?
+
+Answer:
+The title is "FoodSaver AI API", the version is "v1.0.0", and
+the description explains the broader FoodSaver AI platform.
+
+
+Q16. Why configure API metadata centrally?
+
+Answer:
+Central configuration provides one consistent title,
+description, and version without repeating application-level
+information across controllers.
+
+
+Q17. Does the OpenAPI version value control URL routing?
+
+Answer:
+No. The Info version is descriptive metadata. It does not
+automatically create /v1 routes or enforce API compatibility.
+
+
+Q18. Why are no security schemes configured currently?
+
+Answer:
+Spring Security, authentication, and authorization are not
+implemented. Publishing a bearer or OAuth scheme now would
+misrepresent the actual API behavior.
+
+
+============================================================
+4. ENDPOINTS AND API TESTING
+============================================================
+
+Q19. Where is Swagger UI available in FoodSaver AI?
+
+Answer:
+http://localhost:8040/swagger-ui.html
+
+
+Q20. Where is the OpenAPI JSON available?
+
+Answer:
+http://localhost:8040/v3/api-docs
+
+
+Q21. Why are Swagger UI and OpenAPI JSON different endpoints?
+
+Answer:
+/v3/api-docs returns the machine-readable API contract.
+Swagger UI is the browser frontend that loads and renders that
+contract.
+
+
+Q22. How do you test an endpoint through Swagger UI?
+
+Answer:
+Open the operation, select "Try it out", enter path parameters
+and a request body where required, execute the request, and
+inspect the actual HTTP status and response.
+
+
+Q23. Does Swagger UI mock API responses?
+
+Answer:
+No. In this setup it calls the running backend. Database
+access, validation, transactions, ownership checks, and
+exception handling still execute normally.
+
+
+Q24. Why might a Product request fail in Swagger UI even when
+the JSON structure is valid?
+
+Answer:
+The Restaurant may not exist, the Product may not belong to
+the Restaurant in the path, the database may be unavailable,
+or a business or persistence rule may reject the request.
+
+
+Q25. Can Swagger UI replace automated tests?
+
+Answer:
+No. It is useful for discovery and manual verification, but
+unit, integration, contract, regression, and security tests
+are still required.
+
+
+============================================================
+5. API DOCUMENTATION AND VERSIONING
+============================================================
+
+Q26. What is currently documented automatically?
+
+Answer:
+SpringDoc discovers the implemented Restaurant and Product
+controller mappings, path variables, request and response DTOs,
+and validation information it can infer.
+
+
+Q27. What documentation is not explicitly added yet?
+
+Answer:
+Custom operation summaries, tags, response examples, detailed
+error responses, @Operation, @ApiResponse, and security
+requirements have not been added.
+
+
+Q28. When would you use @Operation?
+
+Answer:
+Use it when generated method names are insufficient and the
+API needs an explicit summary, description, operation ID, or
+tags. Annotations should describe implemented behavior.
+
+
+Q29. When would you use @ApiResponse?
+
+Answer:
+Use it to document specific response statuses, descriptions,
+headers, and payload schemas, especially application-specific
+400, 404, 409, or other outcomes.
+
+
+Q30. How should API versioning be handled?
+
+Answer:
+Choose an explicit strategy such as URL, header, or media-type
+versioning; define compatibility rules; and keep OpenAPI
+documents aligned with deployed versions. Metadata alone does
+not implement versioning.
+
+
+Q31. What is the difference between API implementation version
+and OpenAPI Info version?
+
+Answer:
+The implementation version identifies a deployed software
+build. The OpenAPI Info version identifies the documented API
+contract. They may be coordinated but are not automatically
+the same.
+
+
+============================================================
+6. COMMON ISSUES AND TROUBLESHOOTING
+============================================================
+
+Q32. What would you check if /swagger-ui.html returns 404?
+
+Answer:
+Check the SpringDoc dependency and version, application
+startup logs, configured context path, custom SpringDoc paths,
+WebMVC versus WebFlux starter choice, and whether the UI URL
+redirects to another path.
+
+
+Q33. What would you check if /v3/api-docs works but Swagger UI
+does not?
+
+Answer:
+The generator is working, so check UI static resources,
+SpringDoc UI configuration, redirects, reverse-proxy paths,
+content-security policy, and dependency conflicts.
+
+
+Q34. Why might an endpoint be missing from the OpenAPI JSON?
+
+Answer:
+The controller may not be component-scanned, the mapping may
+not be recognized, packages or paths may be filtered, the
+method may be hidden, or application startup may be using
+different configuration.
+
+
+Q35. Why can generated schemas differ from the expected API
+contract?
+
+Answer:
+Generic types, Jackson configuration, inheritance, nullability,
+validation annotations, or insufficient explicit schema
+metadata can affect generation. Compare the document with
+runtime serialization and add precise metadata where needed.
+
+
+============================================================
+7. PRODUCTION AND SECURITY CONSIDERATIONS
+============================================================
+
+Q36. Should Swagger UI always be public in production?
+
+Answer:
+Not necessarily. The decision depends on whether the API is
+public and the organization's security policy. Swagger UI and
+API docs may be restricted, disabled, or published through a
+controlled developer portal.
+
+
+Q37. Does hiding Swagger UI secure the API?
+
+Answer:
+No. The API still requires authentication, authorization,
+input validation, rate limiting, and other controls. Hiding
+documentation is not an access-control mechanism.
+
+
+Q38. What security risks should be considered in API
+documentation?
+
+Answer:
+Avoid exposing secrets, internal-only endpoints, sensitive
+examples, infrastructure details, or misleading test
+credentials. Documentation access and "Try it out" behavior
+should match the environment's security policy.
+
+
+Q39. How should authentication be represented after Spring
+Security is implemented?
+
+Answer:
+Define the actual security scheme, such as bearer JWT or
+OAuth2, document the required scopes or roles, and apply
+security requirements only to endpoints that enforce them.
+
+
+============================================================
+8. SCENARIO-BASED AND 3-YEAR-EXPERIENCE QUESTIONS
+============================================================
+
+Q40. The OpenAPI JSON lists a 200 response, but the endpoint
+actually returns 201. What would you do?
+
+Answer:
+Treat it as contract drift. Verify the controller response,
+correct inferred or explicit response documentation, add a
+test that checks the contract, and avoid changing runtime
+behavior solely to match incorrect documentation.
+
+
+Q41. A frontend team wants to generate a client SDK. What
+should be done first?
+
+Answer:
+Review operation IDs, schemas, error contracts, nullability,
+versioning, and backward compatibility. Add contract checks so
+generated clients are based on a stable, accurate document.
+
+
+Q42. How would you improve the current FoodSaver AI OpenAPI
+integration incrementally?
+
+Answer:
+First add accurate tags and summaries, then document shared
+error responses and examples, add contract verification, and
+introduce security metadata only when security is implemented.
+
+
+Q43. How would you keep OpenAPI documentation accurate in CI?
+
+Answer:
+Start the application or generate the document during tests,
+validate the OpenAPI file, compare intentional contract
+changes, and run integration tests for documented status codes
+and schemas.
+
+
+Q44. The application is behind a reverse proxy and Swagger UI
+calls the wrong host. What would you investigate?
+
+Answer:
+Check forwarded-header handling, proxy configuration, server
+URLs in OpenAPI, context paths, TLS termination, and whether
+the application trusts the proxy's forwarded headers.
+
+
+Q45. Why should planned Inventory, Kafka, Redis, AI, or
+security features not be documented as current endpoints?
+
+Answer:
+OpenAPI is an executable API contract. Advertising unimplemented
+behavior misleads consumers, breaks generated clients, and
+reduces trust. Future capabilities should be documented as
+roadmap items until their endpoints actually exist.
