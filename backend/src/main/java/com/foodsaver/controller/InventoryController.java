@@ -12,8 +12,14 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.foodsaver.dto.request.InventoryCreateRequest;
 import com.foodsaver.dto.response.InventoryResponse;
+import com.foodsaver.exception.ErrorResponse;
 import com.foodsaver.service.InventoryService;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import jakarta.validation.Valid;
 
 @RestController
@@ -27,6 +33,37 @@ public class InventoryController {
 	}
 
 	@PostMapping
+	@Operation(
+			summary = "Create inventory",
+			description = "Creates an inventory record for a product owned by the specified "
+					+ "restaurant on a given inventory date.")
+	@ApiResponses({
+			@ApiResponse(
+					responseCode = "201",
+					description = "Inventory created successfully",
+					content = @Content(
+							mediaType = "application/json",
+							schema = @Schema(implementation = InventoryResponse.class))),
+			@ApiResponse(
+					responseCode = "400",
+					description = "Validation failed",
+					content = @Content(
+							mediaType = "application/json",
+							schema = @Schema(implementation = ErrorResponse.class))),
+			@ApiResponse(
+					responseCode = "404",
+					description = "Restaurant or product not found",
+					content = @Content(
+							mediaType = "application/json",
+							schema = @Schema(implementation = ErrorResponse.class))),
+			@ApiResponse(
+					responseCode = "409",
+					description = "Inventory already exists for the same restaurant, product, "
+							+ "and inventory date",
+					content = @Content(
+							mediaType = "application/json",
+							schema = @Schema(implementation = ErrorResponse.class)))
+	})
 	public ResponseEntity<InventoryResponse> createInventory(
 			@PathVariable("restaurantPublicId") UUID restaurantPublicId,
 			@Valid @RequestBody InventoryCreateRequest request) {
