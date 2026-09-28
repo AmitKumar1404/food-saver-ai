@@ -74,6 +74,20 @@ public class GlobalExceptionHandler {
 		return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
 	}
 
+	@ExceptionHandler(InventoryNotFoundException.class)
+	public ResponseEntity<ErrorResponse> handleInventoryNotFoundException(
+			InventoryNotFoundException exception,
+			HttpServletRequest request) {
+		ErrorResponse response = new ErrorResponse(
+				Instant.now(),
+				HttpStatus.NOT_FOUND.value(),
+				exception.getMessage(),
+				request.getRequestURI(),
+				Map.of());
+
+		return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
+	}
+
 	@ExceptionHandler(InventoryAlreadyExistsException.class)
 	public ResponseEntity<ErrorResponse> handleInventoryAlreadyExistsException(
 			InventoryAlreadyExistsException exception,

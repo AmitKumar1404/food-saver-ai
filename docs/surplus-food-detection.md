@@ -10,9 +10,10 @@ The first version is intentionally deterministic. It will compare an
 Inventory record's `availableQuantity` with a configurable threshold and store
 the result as a detection snapshot.
 
-This document defines the initial business and technical design only. No
-Surplus Detection Java code, API, database table, AI integration, messaging,
-or cache has been implemented yet.
+This document defines the initial business and technical design and records
+the implemented V1 behavior. V1 now includes the persistence model,
+configuration, service, REST API, history lookup, exception mapping, and
+focused tests. AI integration, messaging, and caching remain future work.
 
 ## 2. Business Problem
 
@@ -273,10 +274,18 @@ vary between businesses and Products. A hard-coded number would mix deployment
 configuration with business logic and require code changes for operational
 tuning.
 
-The first implementation should retrieve a platform-level threshold from an
-external configuration source through a clear configuration boundary. The
-actual property name, defaulting policy, and failure behavior must be decided
-when implementation begins.
+V1 retrieves its platform-level threshold through the validated Spring Boot
+configuration property:
+
+```properties
+foodsaver.surplus-detection.threshold-quantity=${SURPLUS_DETECTION_THRESHOLD:5.000}
+```
+
+`5.000` is the development default and deployments can override it with the
+`SURPLUS_DETECTION_THRESHOLD` environment variable. The property is bound as
+`BigDecimal` and must be at least `0.001`. A missing, zero, or negative value
+fails application startup instead of allowing detection with invalid
+configuration.
 
 Potential future configuration precedence could include:
 
@@ -328,20 +337,23 @@ The implementation should avoid circular service dependencies. A dedicated
 read boundary or ownership-aware repository query may be preferable if one
 service calling another would blur responsibilities.
 
-## 12. Future API Concept
+## 12. V1 API
 
-A future endpoint could be:
+The implemented creation endpoint is:
 
 ```text
 POST /api/v1/restaurants/{restaurantPublicId}/inventory/{inventoryPublicId}/surplus-detection
 ```
 
-### Conceptual request
+### Request
 
-The initial request may require no business fields because the Inventory
-identifier comes from the path and the threshold comes from configuration.
-If idempotency is required, its key should use a standard request-header or
-explicit contract designed for that purpose.
+The endpoint has no request body. Both ownership identifiers come from the
+path, and the threshold comes from server-side configuration. This prevents
+clients from choosing the status, detected quantity, or threshold.
+
+`SurplusDetectionCreateRequest` contains only a validated
+`inventoryPublicId` for a possible request-body-based integration, but it is
+not consumed by this path-based V1 endpoint.
 
 Clients must not supply:
 
@@ -351,9 +363,9 @@ Clients must not supply:
 - Internal Inventory ID
 - Audit timestamps
 
-### Conceptual response
+### Successful response
 
-A future response could include:
+The endpoint returns `201 Created` with:
 
 - Detection public ID
 - Inventory public ID
@@ -363,17 +375,28 @@ A future response could include:
 - Detection timestamp
 - Creation and update timestamps
 
-### Conceptual HTTP behavior
+Internal database IDs and entity references are not exposed.
 
-Potential response semantics to design during implementation include:
+### History endpoint
 
-- `201 Created` for a newly persisted detection snapshot
-- `404 Not Found` for a missing Restaurant or ownership-scoped Inventory
-- `409 Conflict` for a duplicate idempotent request when applicable
-- `500 Internal Server Error` only through safe centralized handling for
-  unexpected failures
+```text
+GET /api/v1/restaurants/{restaurantPublicId}/inventory/{inventoryPublicId}/surplus-detections
+```
 
-No endpoint or DTO is implemented by this document.
+The service validates Restaurant ownership before returning snapshots ordered
+by `detectedAt` from newest to oldest.
+
+### HTTP and exception behavior
+
+- `201 Created` when a new detection snapshot is persisted
+- `200 OK` when detection history is returned
+- `400 Bad Request` for malformed path values
+- `404 Not Found` with `ErrorResponse` when the Restaurant does not exist or
+  the Inventory is missing from that Restaurant's ownership scope
+
+Invalid threshold configuration is not handled as an API request error because
+validated configuration prevents the application from starting with that
+state.
 
 ## 13. Future Processing Flow
 
@@ -463,15 +486,19 @@ transaction. The transaction must not directly mutate Inventory.
 
 ### Duplicate requests and idempotency
 
-Repeated client retries can create multiple snapshots with the same inputs.
+V1 deliberately allows repeated requests to create multiple detection
+snapshots for the same Inventory. It does not add a uniqueness constraint on
+`inventory_id` and does not yet implement an idempotency key. This preserves
+legitimate re-evaluation and history, but a client retry can create another
+snapshot with the same inputs.
+
 Future design should distinguish:
 
 - A legitimate later re-evaluation
 - A retry of the same request
 
 Possible approaches include idempotency keys, a request identifier, or a
-carefully defined time/version-based uniqueness rule. No idempotency mechanism
-is implemented yet.
+carefully defined time/version-based uniqueness rule.
 
 ## 16. Future AI Integration
 
@@ -528,26 +555,31 @@ Redis is not part of V1.
 
 ## 19. Testing Strategy
 
+The implemented focused unit tests cover the deterministic service and
+configuration-property validation without introducing food-safety assumptions.
+
 ### Deterministic rule tests
 
-- Available quantity below threshold → `NOT_SURPLUS`
-- Available quantity equal to threshold → `POTENTIAL_SURPLUS`
-- Available quantity above threshold → `POTENTIAL_SURPLUS`
+- Available quantity below threshold produces `NOT_SURPLUS`
+- Available quantity equal to or above threshold produces
+  `POTENTIAL_SURPLUS`
 - `POTENTIAL_SURPLUS` records the evaluated available quantity
 - `NOT_SURPLUS` records zero detected quantity
-- Threshold used by the decision is persisted
+- The exact configured threshold is persisted
+- Missing, zero, and negative configuration values are rejected
 
 ### Ownership and resource tests
 
 - Missing Inventory is rejected
 - Missing Restaurant is rejected
-- Inventory owned by another Restaurant is not accessible
+- Inventory owned by another Restaurant is not accessible through the
+  ownership-aware repository query
 
 ### Persistence and duplicate tests
 
-- Detection snapshot is persisted with public ID and timestamps
-- Multiple legitimate snapshots can be retained for history
-- Retried duplicate requests follow the future idempotency contract
+- A detection snapshot is passed to the repository for persistence
+- Inventory quantities remain unchanged
+- Multiple legitimate snapshots can be created for the same Inventory
 
 ### Concurrency tests
 
