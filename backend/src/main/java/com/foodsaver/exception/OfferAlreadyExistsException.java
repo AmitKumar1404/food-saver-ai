@@ -7,4 +7,8 @@ public class OfferAlreadyExistsException extends RuntimeException {
 	public OfferAlreadyExistsException(String message) {
 		super(message);
 	}
+
+	public OfferAlreadyExistsException(String message, Throwable cause) {
+		super(message, cause);
+	}
 }
