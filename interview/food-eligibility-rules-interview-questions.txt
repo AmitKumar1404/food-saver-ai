@@ -1,0 +1,383 @@
+============================================================
+FOODSAVER AI - FOOD ELIGIBILITY RULES INTERVIEW QUESTIONS
+============================================================
+
+Module:
+Food Eligibility Rules V1
+
+Purpose:
+Interview preparation from beginner to approximately
+3-year experience level.
+
+Current implementation:
+- Ownership-validated eligibility fact snapshots
+- One immutable project-level V1 policy
+- Pure deterministic rule evaluation
+- Immutable evaluation and rule-result persistence
+- Transactional evaluation service
+- Ownership-aware REST endpoint with centralized errors
+- No AI, RAG, Kafka, Redis, Offer creation, or food-safety
+  certification in V1
+
+Current endpoint:
+POST /api/v1/restaurants/{restaurantPublicId}/inventory/
+{inventoryPublicId}/surplus-detections/{surplusDetectionPublicId}/
+eligibility-evaluations
+
+
+============================================================
+1. BEGINNER - MODULE AND SAFETY FUNDAMENTALS
+============================================================
+
+Q1. Why did FoodSaver create a separate Food Eligibility
+module?
+
+Expected answer:
+Surplus Detection answers whether available quantity meets a
+configured surplus threshold. Food Eligibility separately
+decides whether that snapshot may progress in the platform
+workflow. The separation prevents quantity detection from
+being confused with eligibility or food-safety certification.
+
+
+Q2. What is the difference between Surplus Detection and Food
+Eligibility?
+
+Expected answer:
+Surplus Detection stores a quantity-based historical snapshot
+with POTENTIAL_SURPLUS or NOT_SURPLUS. Food Eligibility loads
+Restaurant, Product, Inventory, and detection facts, applies
+the immutable V1 policy and deterministic rules, then stores
+ELIGIBLE_FOR_OFFER, NOT_ELIGIBLE, or REQUIRES_REVIEW.
+
+
+Q3. Why is POTENTIAL_SURPLUS not equivalent to food-safety
+approval?
+
+Expected answer:
+POTENTIAL_SURPLUS only means availableQuantity met the surplus
+threshold used by the detection module. It says nothing about
+regulatory compliance, handling conditions, suitability for
+consumption, or approval for sale.
+
+
+Q4. Why should AI not be the final food-safety authority?
+
+Expected answer:
+AI output can be probabilistic, incomplete, or unsupported by
+the applicable authority. FoodSaver keeps deterministic
+controls and qualified human oversight authoritative. AI must
+not certify safety or bypass a blocking rule.
+
+
+Q5. Why are deterministic rules evaluated before introducing
+Agentic AI?
+
+Expected answer:
+Deterministic rules are reproducible, testable, auditable, and
+tied to an immutable policy version. They establish hard
+workflow boundaries before any future agent is allowed to
+recommend or coordinate actions.
+
+
+Q6. Explain the BLOCK > REVIEW > PASS precedence.
+
+Expected answer:
+If any rule returns BLOCK, the overall status is
+NOT_ELIGIBLE. Otherwise, any REVIEW produces
+REQUIRES_REVIEW. Only when every rule passes does the result
+become ELIGIBLE_FOR_OFFER.
+
+
+Q7. Why does the evaluator run all applicable rules instead of
+stopping at the first failure?
+
+Expected answer:
+FoodSaver persists every rule result for auditability. Running
+all rules preserves the complete decision evidence, including
+multiple blocks, reviews, and passes, while overall precedence
+still determines one final status.
+
+
+Q8. What is an immutable policy version?
+
+Expected answer:
+Once published, its identity and meaning do not change. A
+policy correction requires a new version instead of rewriting
+the policy that historical evaluations used.
+
+
+============================================================
+2. INTERMEDIATE - POLICY, OWNERSHIP, AND HISTORY
+============================================================
+
+Q9. Why does an evaluation store policy key, version, and
+source reference?
+
+Expected answer:
+The fields identify the exact project policy family, immutable
+version, and governance source used. They make a historical
+decision explainable without exposing internal database IDs.
+
+
+Q10. Why is the policy effectiveFrom configuration required?
+
+Expected answer:
+The policy's effective timestamp is governance metadata and
+must be supplied explicitly through
+foodsaver.food-eligibility.policy.effective-from. It must not
+be generated from evaluation time.
+
+
+Q11. Why is there no arbitrary or default policy timestamp?
+
+Expected answer:
+A generated default could make the application apply a policy
+from an unapproved point in time and undermine historical
+explainability. Missing or invalid configuration therefore
+fails startup validation.
+
+
+Q12. What happens when policy information is missing?
+
+Expected answer:
+Invalid required V1 configuration fails startup. At the rule
+domain level, a missing supplied policy produces REVIEW, but
+the current fixed V1 resolver always provides its validated
+single policy. No artificial production REVIEW condition is
+invented.
+
+
+Q13. Why is ownership validation important?
+
+Expected answer:
+Public UUIDs are not authority by themselves. FoodSaver must
+prove that the Inventory belongs to the requested Restaurant,
+its Product belongs to the same Restaurant, and the Surplus
+Detection belongs to that Inventory before evaluating facts.
+
+
+Q14. Why use ownership-aware repository queries?
+
+Expected answer:
+They scope lookup and authorization together so a resource
+owned by another Restaurant is returned as not found. This
+reduces accidental cross-tenant data disclosure.
+
+
+Q15. Why are multiple evaluations allowed for one Surplus
+Detection?
+
+Expected answer:
+Evaluations are immutable history. Re-evaluation may be needed
+after a policy version or authoritative fact changes, so
+surplus_detection_id is indexed but not unique.
+
+
+Q16. Why persist rule-level results?
+
+Expected answer:
+The final status alone cannot explain which checks passed,
+blocked, or required review. Rule code, outcome, reason code,
+and message provide stable audit evidence.
+
+
+Q17. Why is @Transactional used on evaluation persistence?
+
+Expected answer:
+One service transaction covers loading the snapshot, saving
+the parent evaluation, and saving every child rule result.
+Callers must not observe a parent without its complete audit
+results.
+
+
+Q18. What does atomic persistence mean here?
+
+Expected answer:
+The evaluation and all rule-result rows commit together, or
+none of them commit. A partial eligibility history is not a
+valid outcome.
+
+
+============================================================
+3. ADVANCED - PERSISTENCE, API, AND ERROR CONTRACTS
+============================================================
+
+Q19. How does rollback work if rule-result persistence fails?
+
+Expected answer:
+The failure propagates as a runtime exception through the
+transactional service proxy. Spring marks the transaction for
+rollback, so the earlier evaluation insert is not committed.
+The integration test verifies this against the real database.
+
+
+Q20. Why use public UUIDs instead of exposing database IDs?
+
+Expected answer:
+Long IDs are internal persistence details and are easy to
+enumerate. UUID public IDs provide stable external identity
+without exposing table sequencing; authorization checks are
+still required.
+
+
+Q21. Why are JPA entities not returned by the controller?
+
+Expected answer:
+Entities expose persistence concerns, lazy relationships, and
+internal IDs. Dedicated response DTOs define the supported API
+contract and return only approved snapshot information.
+
+
+Q22. Why are entity relationships LAZY?
+
+Expected answer:
+An evaluation or rule-result query should not automatically
+load the complete Restaurant, Product, Inventory, and history
+graph. LAZY relationships avoid unnecessary queries and large
+object graphs; services load what their transaction needs.
+
+
+Q23. Why does NOT_ELIGIBLE return HTTP 201 instead of 4xx?
+
+Expected answer:
+The request succeeded and created a valid immutable evaluation
+snapshot. NOT_ELIGIBLE is the business outcome, not an HTTP
+request failure.
+
+
+Q24. Why does REQUIRES_REVIEW return HTTP 201?
+
+Expected answer:
+It is also a completed evaluation outcome that blocks
+automatic progression. The current fixed V1 policy has no
+legitimate production review condition, but the API and domain
+contract preserve the state for a future approved condition.
+
+
+Q25. How should malformed UUID path parameters be handled?
+
+Expected answer:
+MethodArgumentTypeMismatchException is handled centrally. The
+API returns HTTP 400 with the existing ErrorResponse fields:
+timestamp, status, message, request path, and a field-level
+error such as restaurantPublicId must be a valid UUID.
+
+
+Q26. Why should ErrorResponse handling be centralized?
+
+Expected answer:
+A RestControllerAdvice keeps controllers focused on HTTP
+orchestration and gives validation, malformed paths, and
+not-found failures one safe, consistent response contract
+without repeated try/catch blocks.
+
+
+============================================================
+4. 3-YEAR EXPERIENCE - FUTURE ARCHITECTURE
+============================================================
+
+Q27. What role could RAG have in the future architecture?
+
+Expected answer:
+RAG could retrieve policy explanations or evidence from
+approved sources to assist reviewers. It is not part of V1 and
+must not become the authority that changes deterministic rule
+outcomes.
+
+
+Q28. Why can RAG not override deterministic hard controls?
+
+Expected answer:
+Retrieved text can be stale, ambiguous, or incorrectly
+matched. Authoritative versioned controls remain the enforced
+boundary; RAG may explain them but cannot convert BLOCK or
+REVIEW into PASS.
+
+
+Q29. How could Kafka be introduced later?
+
+Expected answer:
+After transaction and event contracts are designed, FoodSaver
+could publish an eligibility-evaluated event for downstream
+workflows. An outbox or equivalent reliability pattern would
+be needed so database commit and event publication cannot
+silently diverge.
+
+
+Q30. How could Redis be introduced later?
+
+Expected answer:
+Redis could cache immutable policy lookups or safe read models
+after ownership, invalidation, and consistency rules are
+defined. It must not become an unversioned authority or bypass
+the database audit record.
+
+
+Q31. What is a safe way to introduce an AI agent into this
+flow?
+
+Expected answer:
+Give it narrowly scoped tools after deterministic evaluation,
+require authorization and audit, and limit it to explanation,
+coordination, or recommendations. It cannot mutate Inventory,
+create Offers automatically, certify safety, or override hard
+controls.
+
+Possible follow-up:
+Should the agent write directly to eligibility tables?
+
+Follow-up answer:
+No. Eligibility snapshots must be produced through the
+validated deterministic service and transaction boundary.
+
+
+Q32. Which parts of the current implementation are
+intentionally not AI-driven?
+
+Expected answer:
+Ownership lookup, fact construction, policy resolution,
+lifecycle checks, status precedence, persistence, transaction
+rollback, and HTTP error mapping are deterministic. V1 has no
+AI, RAG, Kafka, Redis, Offer, or Order integration.
+
+
+============================================================
+5. SCENARIO, FOLLOW-UP, AND TRICKY QUESTIONS
+============================================================
+
+Scenario:
+A Surplus Detection is POTENTIAL_SURPLUS, but the Restaurant
+is PENDING_VERIFICATION. What is the outcome?
+
+Answer:
+The Restaurant lifecycle rule returns BLOCK, so the overall
+result is NOT_ELIGIBLE. This is a platform-lifecycle decision,
+not a statement that the food is unsafe.
+
+
+Tricky question:
+If six rules PASS and one rule BLOCKS, can the result be
+ELIGIBLE_FOR_OFFER because most rules passed?
+
+Answer:
+No. BLOCK has highest precedence. Rule evaluation is not a
+vote or score.
+
+
+Scenario:
+The evaluation row is inserted, then saving rule results
+fails. What should remain in the database?
+
+Answer:
+Neither the evaluation nor rule results should remain. The
+transaction rolls back atomically.
+
+
+Follow-up:
+Does a public UUID remove the need for ownership validation?
+
+Answer:
+No. UUIDs reduce enumeration risk but do not grant access.
+Every lookup must still enforce the Restaurant ownership
+chain.
