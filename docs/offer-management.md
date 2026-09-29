@@ -44,12 +44,27 @@ The module follows the existing Spring Boot layered architecture:
 - `controller` owns HTTP binding, status codes, and OpenAPI annotations.
 - `service` and `service.impl` own business validation and transaction
   orchestration.
-- `repository` owns persistence access and ownership-aware queries.
+- `repository` owns Offer persistence checks and the pessimistic Inventory
+  lock.
 - `entity` represents the Offer persistence model.
 - `dto.request` and `dto.response` define the API boundary.
 - `exception` integrates with the existing centralized `GlobalExceptionHandler`.
 
-No production code is introduced by this design document.
+### 1.1 V1 implementation status
+
+Offer Management V1 is implemented as:
+
+- `Offer` and `OfferStatus`;
+- `OfferRepository`;
+- `OfferCreateRequest` and `OfferResponse`;
+- `OfferService` and transactional `OfferServiceImpl`;
+- `OfferController`;
+- Offer-specific exceptions integrated with `GlobalExceptionHandler`; and
+- controller and MySQL-backed end-to-end tests.
+
+The implemented V1 surface is create-only. It exposes one Restaurant-scoped
+Offer creation endpoint and does not expose update, lifecycle-transition,
+listing, reservation, or ordering APIs.
 
 ## 2. Business Problem
 
@@ -130,7 +145,7 @@ override the Food Eligibility rule engine.
 
 ### 5.1 Cardinalities
 
-The proposed relationships are:
+The implemented relationships are:
 
 ```text
 Restaurant 1 -------- N Product
@@ -187,7 +202,7 @@ V1 allows:
 The one-evaluation-to-one-Offer rule is enforced by a unique constraint on
 `eligibility_evaluation_id`.
 
-An Inventory-wide permanent unique constraint is not proposed. Such a
+An Inventory-wide permanent unique constraint is not implemented. Such a
 constraint would prevent legitimate historical re-offering after an Offer
 expires or closes. Instead, creation serializes on the Inventory row and checks
 for an existing open Offer whose `expires_at` is after the new creation time.
@@ -234,7 +249,7 @@ not need to misuse eligibility or Inventory status.
 
 ## 8. Database Design
 
-### 8.1 Proposed table
+### 8.1 Implemented table
 
 Table name:
 
@@ -242,7 +257,7 @@ Table name:
 offers
 ```
 
-### 8.2 Proposed fields
+### 8.2 Implemented fields
 
 #### `id`
 
@@ -316,14 +331,14 @@ bidirectional collection is unnecessary.
 - SQL type: `DECIMAL(5,2)`
 - Java type: `BigDecimal`
 - Nullability: not null
-- Proposed V1 constraint: greater than `0.00` and less than `100.00`
+- Request shape: at most three integer digits and two fractional digits
 - Purpose: authoritative pricing input supplied by the Restaurant actor
-- Approval requirement: the allowed range and treatment of free Offers must be
-  approved before implementation
 
 `DECIMAL(5,2)` supports values up to three integer digits and two fractional
-digits. V1 validation narrows this storage capacity to the approved business
-range.
+digits. The implementation does not declare a standalone configurable numeric
+discount range. It rejects any discount whose calculated final price is not
+positive and strictly below the original price, so free and zero-discount
+Offers are not accepted by implemented V1 behavior.
 
 #### `offer_price`
 
@@ -412,7 +427,7 @@ Clients cannot schedule future activation in V1.
 
 ### 8.3 Fields deliberately excluded from V1
 
-The following fields are not proposed:
+The following fields are not persisted:
 
 - `available_quantity`
 - `reserved_quantity`
@@ -432,9 +447,9 @@ Also excluded:
 - title and description snapshots, because V1 can use the Product reference;
   snapshot requirements can be revisited for marketplace-history display.
 
-## 9. Entity Relationship Proposal
+## 9. Entity Relationships
 
-The proposed Offer entity has four unidirectional lazy relationships:
+The implemented Offer entity has four unidirectional lazy relationships:
 
 ```text
 Offer
@@ -566,7 +581,7 @@ The client cannot submit `original_price`, `offer_price`, or `currency_code`.
 
 ### 11.3 Formula
 
-The proposed formula is:
+The implemented formula is:
 
 ```text
 discount_amount =
@@ -578,33 +593,32 @@ offer_price =
     original_price - discount_amount
 ```
 
-The final `offer_price` is stored at scale 2. Intermediate calculation must use
-sufficient precision and the approved rounding rule. The proposed V1 rounding
-mode is `HALF_UP`, applied once to the final Offer price rather than at each
-intermediate step.
-
-The rounding mode and whether `100.00%` free Offers are allowed are explicit
-business decisions requiring approval before implementation. No code should
-silently choose different behavior.
+The implementation uses `BigDecimal` throughout and applies
+`RoundingMode.HALF_UP` once when the final `offer_price` is set to scale 2.
+It does not use `double` or `float`.
 
 ### 11.4 Validation
 
-Proposed V1 validation:
+Implemented V1 validation:
 
 - Product base price must be positive.
 - Discount must fit `DECIMAL(5,2)`.
-- Discount must be within the approved V1 range.
 - Calculated Offer price must fit `DECIMAL(12,2)`.
-- Offer price must be lower than original price.
+- Calculated Offer price must be positive and lower than original price.
 - Product and Restaurant currency codes must match.
 - Currency cannot be supplied or overridden by the client.
+
+There is no independently configured discount-range policy in V1. The
+calculated-price invariant currently excludes free, zero-discount, negative
+discount, and over-100-percent outcomes without introducing category-, demand-,
+or AI-based pricing.
 
 No demand-based, category-based, time-based, or AI-generated pricing rule is
 introduced.
 
 ## 12. Offer Status Lifecycle
 
-### 12.1 Proposed statuses
+### 12.1 Implemented statuses
 
 #### `ACTIVE`
 
@@ -645,7 +659,7 @@ reservation handling, and authorization are not defined.
 If scheduling or editing is later approved, `DRAFT`, `SCHEDULED`, or `PAUSED`
 can be introduced through a deliberate migration and transition contract.
 
-### 12.3 Proposed transitions
+### 12.3 Future transitions
 
 ```text
 ACTIVE ---- expires_at reached ----------------> EXPIRED
@@ -712,7 +726,6 @@ Before creation, the service verifies:
 
 - evaluation belongs to the requested Restaurant;
 - evaluation's Surplus Detection belongs to the derived Inventory;
-- persisted evaluation policy key, version, and source reference are present;
 - Inventory belongs to the requested Restaurant;
 - Inventory's Product belongs to the requested Restaurant;
 - direct Offer Restaurant, Product, and Inventory references match that chain;
@@ -721,9 +734,10 @@ Before creation, the service verifies:
 - Inventory status is `ACTIVE`; and
 - evaluation status is exactly `ELIGIBLE_FOR_OFFER`.
 
-Policy metadata validation checks the required persisted fields on the selected
-immutable evaluation. Offer Management does not re-resolve a current policy,
-re-run eligibility, or compare the evaluation with a newer policy version.
+Offer Management does not re-resolve a current policy, re-run eligibility, or
+compare the evaluation with a newer policy version. Persisted policy metadata
+remains owned by the immutable Food Eligibility Evaluation and is not copied
+into Offer.
 
 Current lifecycle validation protects against source state changing after the
 evaluation. It does not add food-safety meaning to those lifecycle statuses.
@@ -768,7 +782,7 @@ cannot retroactively change the first Offer.
 
 ### 14.1 Endpoint
 
-Proposed V1 endpoint:
+Implemented V1 endpoint:
 
 ```http
 POST /api/v1/restaurants/{restaurantPublicId}/offers
@@ -780,7 +794,7 @@ as path parameters.
 
 ### 14.2 Request DTO
 
-Proposed name:
+Implemented request DTO:
 
 ```text
 OfferCreateRequest
@@ -810,7 +824,7 @@ The request must not contain:
 
 ### 14.3 Response DTO
 
-Proposed name:
+Implemented response DTO:
 
 ```text
 OfferResponse
@@ -818,21 +832,21 @@ OfferResponse
 
 Response fields:
 
-- `publicId`
-- `restaurantPublicId`
-- `productPublicId`
-- `inventoryPublicId`
-- `eligibilityEvaluationPublicId`
-- `originalPrice`
-- `discountPercentage`
-- `offerPrice`
-- `currencyCode`
-- `offeredQuantity`
-- `startAt`
-- `expiresAt`
-- `status`
-- `createdAt`
-- `updatedAt`
+- `publicId` (`UUID`)
+- `restaurantPublicId` (`UUID`)
+- `productPublicId` (`UUID`)
+- `inventoryPublicId` (`UUID`)
+- `eligibilityEvaluationPublicId` (`UUID`)
+- `originalPrice` (`BigDecimal`)
+- `discountPercentage` (`BigDecimal`)
+- `offerPrice` (`BigDecimal`)
+- `currencyCode` (`String`)
+- `offeredQuantity` (`BigDecimal`)
+- `startAt` (`Instant`)
+- `expiresAt` (`Instant`)
+- `status` (`OfferStatus`)
+- `createdAt` (`Instant`)
+- `updatedAt` (`Instant`)
 
 No internal database ID or JPA entity is exposed.
 
@@ -847,7 +861,7 @@ The body is `OfferResponse`.
 ### 14.5 Error responses
 
 - `400 Bad Request`: malformed UUID, invalid DTO shape, invalid decimal
-  precision, non-positive quantity, invalid discount, or invalid time range.
+  precision, DTO-level non-positive quantity, or invalid expiry range.
 - `404 Not Found`: Restaurant or ownership-scoped eligibility chain not found.
 - `409 Conflict`: evaluation is not eligible, evaluation is stale, current
   lifecycle state blocks creation, evaluation was already used, an open Offer
@@ -859,16 +873,20 @@ All errors use the existing `ErrorResponse` contract.
 
 ### 15.1 DTO validation
 
-Proposed Bean Validation:
+Implemented Bean Validation:
 
 - `eligibilityEvaluationPublicId`: `@NotNull`
 - `offeredQuantity`: `@NotNull`, minimum `0.001`, and
   `@Digits(integer = 9, fraction = 3)`
 - `discountPercentage`: `@NotNull`,
-  `@Digits(integer = 3, fraction = 2)`, and the approved range
-- `expiresAt`: `@NotNull` and future relative to request processing
+  `@Digits(integer = 3, fraction = 2)`
+- `expiresAt`: `@NotNull`
 
 No client-supplied price is accepted.
+
+`expiresAt` is compared with the one server-generated `startAt` captured by the
+service. A null or non-later value raises `OfferValidationException` and maps
+to `400 Bad Request`; no arbitrary minimum or maximum duration is enforced.
 
 ### 15.2 Service validation
 
@@ -877,7 +895,6 @@ service validates:
 
 - ownership chain;
 - exact eligibility status;
-- persisted evaluation policy metadata;
 - Inventory version and quantity equality;
 - current Restaurant, Product, and Inventory lifecycle;
 - offered quantity against current/evaluated quantity;
@@ -913,6 +930,12 @@ A caller cannot combine:
 Cross-Restaurant mismatches return `404`, avoiding disclosure that another
 tenant's resource exists.
 
+The implemented service performs the evaluation lookup with an
+ownership-scoped JPQL join across evaluation, Surplus Detection, Inventory,
+Product, and Restaurant. It selects scalar Inventory/Product IDs without
+materializing an unlocked Inventory state, then obtains the current Inventory
+through the repository's pessimistic-write-lock method.
+
 Ownership validation is data isolation. Authentication and actor authorization
 are separate responsibilities.
 
@@ -926,23 +949,24 @@ database-backed sequence:
 1. Begin the transaction.
 2. Load the Restaurant through an ownership-aware lookup.
 3. Load the explicitly selected immutable Food Eligibility Evaluation through
-   ownership-aware relationship validation.
-4. Load its Inventory through an ownership-aware lookup using a pessimistic
+   an ownership-scoped JPQL relationship query.
+4. Require evaluation status `ELIGIBLE_FOR_OFFER`.
+5. Load its Inventory through an ownership-aware lookup using a pessimistic
    **WRITE** lock.
-5. Validate that the evaluation belongs to the requested Restaurant and locked
-   Inventory and has status exactly `ELIGIBLE_FOR_OFFER`.
-6. Revalidate
-   `currentInventory.version == evaluation.evaluatedInventoryVersion`.
+6. Validate that the evaluation belongs to the requested Restaurant and locked
+   Inventory.
 7. Revalidate
+   `currentInventory.version == evaluation.evaluatedInventoryVersion`.
+8. Revalidate
    `currentInventory.availableQuantity.compareTo(evaluation.evaluatedAvailableQuantity) == 0`.
-8. Validate `offeredQuantity > 0`,
+9. Validate `offeredQuantity > 0`,
    `offeredQuantity <= currentInventory.availableQuantity`, and
    `offeredQuantity <= evaluation.evaluatedAvailableQuantity`.
-9. Check that no Offer already uses the selected evaluation.
-10. Check that no other open `ACTIVE` Offer exists for the Inventory.
-11. Calculate pricing deterministically.
-12. Persist the Offer.
-13. Commit.
+10. Check that no Offer already uses the selected evaluation.
+11. Check that no other open `ACTIVE` Offer exists for the Inventory.
+12. Calculate pricing deterministically.
+13. Persist the Offer.
+14. Commit.
 
 The lock serializes V1 Offer creation checks for the same Inventory. A
 concurrent creator waits and, after acquiring the lock, sees the first open
@@ -1004,7 +1028,7 @@ The transaction includes:
 - ownership-aware Restaurant and selected-evaluation loads;
 - ownership-aware Inventory pessimistic write lock;
 - evaluation-to-Restaurant and evaluation-to-Inventory relationship checks;
-- exact eligibility status and persisted policy metadata validation;
+- exact eligibility status validation;
 - current Inventory version and available-quantity snapshot validation;
 - Restaurant, Product, and Inventory lifecycle validation;
 - offered-quantity validation;
@@ -1024,17 +1048,22 @@ The controller performs no repository access and no transaction management.
 
 ## 19. Error Handling
 
-### 19.1 Proposed exceptions
+### 19.1 Implemented exceptions
 
-Use the smallest necessary domain exceptions:
+The implementation uses:
 
 - `OfferEligibilityException`: evaluation exists and is owned correctly, but
   status, staleness, or current lifecycle blocks Offer creation; map to `409`.
 - `OfferAlreadyExistsException`: evaluation already has an Offer or an open
   Offer conflicts for the Inventory; map to `409`.
+- `OfferValidationException`: client-supplied expiry is not after the
+  server-generated start time; map to `400`.
+- `FoodEligibilityEvaluationNotFoundException`: selected evaluation is absent
+  from the requested Restaurant ownership scope; map to `404` without
+  disclosing cross-Restaurant existence.
 
-Existing exceptions should be reused for missing Restaurant and malformed UUID
-handling.
+`RestaurantNotFoundException` handles a missing Restaurant. The centralized
+type-mismatch handler maps malformed UUID path values to `400`.
 
 `OfferNotFoundException` is not required by the create-only V1 endpoint. Add it
 only when a read or lifecycle API exists.
@@ -1043,11 +1072,10 @@ only when a read or lifecycle API exists.
 
 `400 Bad Request`:
 
-- syntactically invalid request;
+- syntactically invalid request or Bean Validation failure;
 - malformed UUID;
 - invalid precision/scale;
 - non-positive quantity;
-- invalid discount range;
 - invalid expiry timestamp.
 
 `404 Not Found`:
@@ -1061,6 +1089,8 @@ only when a read or lifecycle API exists.
 - evaluation status is `NOT_ELIGIBLE` or `REQUIRES_REVIEW`;
 - evaluation is stale;
 - current lifecycle no longer permits progression;
+- discount or calculated pricing does not satisfy V1 price invariants;
+- Product and Restaurant currency are inconsistent;
 - eligibility evaluation was already used;
 - overlapping open Offer exists;
 - optimistic/pessimistic concurrent conflict.
@@ -1070,39 +1100,34 @@ Restaurant's resource details.
 
 ## 20. Security Boundary
 
-The expected actor is an authenticated and authorized Restaurant operator
-acting for the Restaurant in the path.
+V1 does not implement Spring Security, authentication, roles, JWT handling, or
+an authorization policy. The path carries `restaurantPublicId`, while the
+request body cannot supply or override Restaurant identity.
 
-V1 design requires:
-
-- the authenticated principal to be authorized for `restaurantPublicId`;
-- policy/administrative actors to remain separate from ordinary Offer actors;
-- ownership checks even after authentication;
-- no acceptance of Restaurant identity from the request body; and
-- no cross-Restaurant data disclosure.
-
-The current project does not yet establish a Spring Security contract for all
-APIs. Offer V1 must not invent a partial authentication model. Security
-implementation remains a prerequisite for production exposure, while
-ownership-aware repository/service validation is implemented independently.
+The implemented ownership-scoped lookup prevents one Restaurant path from
+using another Restaurant's evaluation chain and returns `404` without
+cross-Restaurant disclosure. This data-isolation check is not a substitute for
+authenticating the caller. A future security phase must define which principal
+may act for the Restaurant before public production exposure, without
+weakening the existing ownership checks.
 
 ## 21. Indexes and Constraints
 
 ### 21.1 Primary and unique constraints
 
-Proposed:
+Implemented:
 
 - Primary key on `id`.
 - Unique constraint `uk_offers_public_id` on `public_id`.
 - Unique constraint `uk_offers_eligibility_evaluation` on
   `eligibility_evaluation_id`.
 
-No permanent unique constraint is proposed on `inventory_id`, because it would
+No permanent unique constraint exists on `inventory_id`, because it would
 forbid non-overlapping historical Offers.
 
 ### 21.2 Foreign keys
 
-Required foreign keys:
+Implemented mandatory relationships generate foreign keys:
 
 - `restaurant_id -> restaurants.id`
 - `product_id -> products.id`
@@ -1114,7 +1139,7 @@ delete upstream domain records through Offer.
 
 ### 21.3 Indexes
 
-Proposed indexes:
+Implemented index:
 
 - `idx_offers_inventory_status_expires`
   on `(inventory_id, status, expires_at)`
@@ -1134,22 +1159,22 @@ evidence. Advanced geospatial and search indexes are also out of scope.
 
 ### 21.4 Check constraints
 
-Where MySQL/JPA migration support is deliberately adopted, proposed checks
-include:
+The entity declares `chk_offers_basic_invariants` with:
 
 - `offered_quantity > 0`
 - `original_price > 0`
 - `offer_price >= 0`
-- `offer_price < original_price`
-- approved discount range
 - `expires_at > start_at`
 
-The server must enforce the same rules before persistence and must not rely
-only on database errors.
+The service additionally requires the calculated Offer price to be positive
+and below the original price. No database check for a final numeric discount
+range is declared because V1 has no independently approved/configured range.
+The server validates before persistence and does not rely only on database
+errors.
 
 ## 22. Swagger and OpenAPI
 
-The controller should follow existing SpringDoc conventions:
+The implemented controller follows existing SpringDoc conventions:
 
 - `@Operation` explains that Offer is a marketplace result gated by Food
   Eligibility and is not food-safety certification.
@@ -1157,9 +1182,9 @@ The controller should follow existing SpringDoc conventions:
 - `@ApiResponses` documents `201`, `400`, `404`, and `409`.
 - `201` references `OfferResponse`.
 - `400`, `404`, and `409` reference the existing `ErrorResponse`.
-- An example request shows only evaluation UUID, offered quantity, discount,
+- The request schema contains only evaluation UUID, offered quantity, discount,
   and expiry.
-- An example response uses public UUIDs only.
+- The response schema uses public UUIDs only.
 
 The generated OpenAPI document must not imply:
 
@@ -1279,110 +1304,58 @@ The validated Offer service remains the write boundary.
 
 ## 27. Testing Strategy
 
-### 27.1 Unit tests
+### 27.1 Current verification result
 
-Service unit tests should cover:
+The complete Maven suite was run against the configured MySQL database after
+V1 implementation:
 
-- `ELIGIBLE_FOR_OFFER` creates an Offer;
-- `NOT_ELIGIBLE` returns `409`;
-- `REQUIRES_REVIEW` returns `409`;
-- the explicitly supplied immutable evaluation is used and does not have to be
-  the latest evaluation for the Inventory;
-- changed Inventory version returns `409`;
-- changed Inventory available quantity, compared using
-  `BigDecimal.compareTo`, returns `409`;
-- unchanged version and available quantity permit creation;
-- inactive Restaurant, Product, or Inventory returns `409`;
-- `offeredQuantity <= 0` returns `400`;
-- quantity above current Inventory availability returns `409`;
-- quantity above evaluated availability returns `409`;
-- invalid discount precision or approved range returns `400`;
-- a valid discount produces the exact calculated price with configured
-  `HALF_UP` rounding;
-- `expiresAt <= startAt` returns `400`, while a valid future expiry is accepted;
-- Product/Restaurant currency mismatch returns `409`;
-- reuse of the same evaluation returns `409`;
-- an existing open `ACTIVE` Offer returns `409`;
-- an existing Offer whose expiry has passed does not block creation under the
-  documented open-Offer rule;
-- source entities are not mutated; and
-- the response contains only public identifiers.
+```text
+Tests run: 82
+Failures: 0
+Errors: 0
+Skipped: 0
+BUILD SUCCESS
+```
 
-Evaluator tests remain in the Food Eligibility module. Offer tests must not
-duplicate that evaluator's internal rule matrix.
+### 27.2 Controller and API tests
 
-### 27.2 Controller tests
+`OfferControllerTests` verifies:
 
-Controller tests should cover:
+- successful `201 OfferResponse` mapping and service delegation;
+- DTO validation failures through the centralized `400 ErrorResponse`;
+- malformed Restaurant UUID handling;
+- ownership-hidden evaluation `404`;
+- eligibility, staleness, duplicate, and overlap `409` mappings;
+- absence of internal IDs, version, safety, and AI metadata; and
+- OpenAPI response schemas for `201`, `400`, `404`, and `409`.
 
-- valid request returns `201 OfferResponse`;
-- malformed Restaurant UUID returns centralized `400 ErrorResponse`;
-- malformed Evaluation UUID returns centralized `400 ErrorResponse`;
-- invalid DTO returns `400 ErrorResponse`;
-- an evaluation owned by another Restaurant returns `404`;
-- an evaluation associated with another Inventory returns `404`;
-- an Inventory owned by another Restaurant returns `404`;
-- a Product relationship mismatch returns `404` under the ownership-hiding
-  rule;
-- ineligible, stale, and duplicate cases return `409`;
-- internal database IDs are absent;
-- request cannot submit server-managed fields; and
-- OpenAPI schemas match runtime responses.
+### 27.3 Database-backed end-to-end tests
 
-### 27.3 Repository tests
+`OfferCreationIntegrationTests` exercises the real Spring MVC, service,
+transaction, JPA, and MySQL path. It covers:
 
-Repository integration tests should prove:
+- the complete Restaurant -> Product -> Inventory -> Surplus Detection ->
+  Food Eligibility Evaluation -> Offer flow;
+- successful persistence with expected public IDs and server-calculated price;
+- explicit selection of an older eligible evaluation even when a newer
+  `NOT_ELIGIBLE` evaluation exists;
+- no mutation of Inventory available, reserved, or sold quantities, status, or
+  version;
+- no mutation of the selected immutable eligibility evaluation;
+- `NOT_ELIGIBLE` and `REQUIRES_REVIEW` rejection;
+- stale Inventory version and stale available-quantity rejection using
+  `BigDecimal.compareTo`;
+- quantity rejection against current and evaluated availability;
+- duplicate-evaluation and open-Offer conflicts;
+- ownership-hidden evaluation lookup;
+- malformed Restaurant UUID and invalid-expiry `400` behavior; and
+- reflection verification that the Inventory repository method retains
+  `PESSIMISTIC_WRITE`.
 
-- ownership-aware evaluation lookup;
-- Inventory lock query behavior;
-- unique Offer public UUID;
-- unique eligibility evaluation;
-- open-Offer lookup by Inventory and expiry;
-- an expired `ACTIVE` row does not satisfy the open-Offer query;
-- lazy mappings work within the service transaction; and
-- no unintended bidirectional mapping is required.
-
-### 27.4 Persistence and transaction tests
-
-MySQL-backed integration tests should prove:
-
-- all Offer foreign keys persist correctly;
-- immutable snapshots match source values at creation;
-- duplicate eligibility usage fails;
-- two serialized creation attempts cannot produce overlapping open Offers;
-- persistence failure rolls back the Offer;
-- before and after creation, `Inventory.availableQuantity` has the same value;
-- `Inventory.reservedQuantity`, `Inventory.soldQuantity`, Inventory status, and
-  Inventory version remain unchanged unless non-mutating JPA/database behavior
-  makes a version change unavoidable; the Offer service never intentionally
-  changes them; and
-- no Offer persists when eligibility or staleness validation fails.
-
-### 27.5 Concurrency tests
-
-Focused concurrency tests should prove:
-
-- same evaluation submitted concurrently produces one Offer;
-- different evaluations for the same Inventory cannot create overlapping open
-  Offers;
-- Inventory changed before lock validation causes conflict;
-- retries do not silently duplicate marketplace records.
-
-V1 does not require a concurrency test between creation of a new eligibility
-evaluation and Offer creation because V1 intentionally has no latest-evaluation
-or cross-module serialization requirement.
-
-### 27.6 Safety-boundary tests
-
-Tests must assert:
-
-- `POTENTIAL_SURPLUS` alone cannot create an Offer;
-- `ELIGIBLE_FOR_OFFER` is required exactly;
-- no status named `SAFE`, `UNSAFE`, or `CERTIFIED` exists;
-- Offer creation does not mutate Inventory;
-- no Offer creates an Order or reservation;
-- no AI or RAG path bypasses validation; and
-- expiry is not described as food-safety certification.
+Because V1 requires current and evaluated available quantities to be equal
+before quantity validation, one quantity-overflow scenario exercises both
+upper bounds. The test does not duplicate Food Eligibility's internal rule
+matrix and does not introduce latest-evaluation semantics.
 
 ## 28. Explicitly Out of Scope
 
@@ -1408,7 +1381,7 @@ Offer V1 explicitly excludes:
 - geospatial search;
 - Offer update or pause/resume APIs;
 - scheduled future activation;
-- expiration scheduler implementation;
+- Offer/expiration scheduler implementation;
 - sold-out processing;
 - inventory reservation or quantity mutation; and
 - a complete Spring Security implementation.
@@ -1461,7 +1434,7 @@ AI remains advisory and cannot bypass eligibility or hard controls.
 ## 30. V1 Flow Diagram
 
 ```text
-Client / authorized Restaurant actor
+Client / Restaurant-scoped request
         |
         | POST /api/v1/restaurants/{restaurantPublicId}/offers
         | body:
@@ -1486,22 +1459,21 @@ evaluation -> detection -> inventory -> restaurant
         +---- missing / wrong ownership --------> 404 ErrorResponse
         |
         v
-Lock Inventory with pessimistic WRITE lock
-        |
-        v
-Validate evaluation relationship chain,
-persisted policy metadata, and current lifecycle
-        |
-        +---- inconsistent ownership -----------> 404 ErrorResponse
-        |
-        +---- lifecycle no longer valid --------> 409 ErrorResponse
-        |
-        v
 Verify exact status == ELIGIBLE_FOR_OFFER
         |
         +---- NOT_ELIGIBLE ---------------------> 409 ErrorResponse
         |
         +---- REQUIRES_REVIEW ------------------> 409 ErrorResponse
+        |
+        v
+Lock Inventory with pessimistic WRITE lock
+        |
+        v
+Validate evaluation relationship chain and current lifecycle
+        |
+        +---- inconsistent ownership -----------> 404 ErrorResponse
+        |
+        +---- lifecycle no longer valid --------> 409 ErrorResponse
         |
         v
 Validate selected evaluation's Inventory version
@@ -1513,8 +1485,8 @@ and available-quantity snapshot against current Inventory
 Validate offered quantity against both current and evaluated
 availability; validate discount, currency, and expiresAt
         |
-        +---- invalid request -------------------> 400 ErrorResponse
-        +---- state/quantity conflict -----------> 409 ErrorResponse
+        +---- invalid expiresAt -----------------> 400 ErrorResponse
+        +---- quantity/pricing/currency conflict -> 409 ErrorResponse
         |
         v
 Check selected evaluation unused and no open ACTIVE Offer
@@ -1541,50 +1513,37 @@ Persist ACTIVE Offer atomically
 Return 201 Created with OfferResponse
 ```
 
-## 31. Business Assumptions and V1 Decisions
+## 31. Implemented V1 Decisions and Remaining Product Decisions
 
-Implementation must not begin until the following V1 business decisions are
-approved:
+Implemented V1 behavior is:
 
-1. Discount range:
-   - proposed `0.00 < discountPercentage < 100.00`;
-   - the accepted lower and upper boundaries require approval.
-2. Zero/free Offers:
-   - confirm whether a final zero price is permitted.
-3. Monetary rounding:
-   - proposed final-price scale 2 with `RoundingMode.HALF_UP`;
-   - confirm this is valid for every supported currency.
-4. Offer duration:
-   - `expiresAt` is required and must be after creation;
-   - approve any minimum or maximum duration; V1 invents neither.
-5. Offered quantity:
-   - V1 permits a quantity smaller than the eligible available snapshot.
-6. Multiple historical Offers:
-   - proposed one open Offer per Inventory, with later non-overlapping history
-     allowed only from a different eligible evaluation.
-7. Immediate activation:
-   - V1 creates `ACTIVE` Offers only; scheduled activation is deferred.
-8. Security:
-   - the authenticated Restaurant-actor contract must be defined before public
-     production exposure.
-9. Customer-facing quantity units:
-   - a standardized unit-of-measure model requires approval before a
-     customer-facing marketplace claims units such as pieces or kilograms.
-10. Expiry transition behavior:
-    - approve when and how an expired `ACTIVE` row is persisted as `EXPIRED`;
-    - `expiresAt` is marketplace availability only and must not be interpreted
-      as a safety or shelf-life limit.
+- The client selects one explicit immutable
+  `eligibilityEvaluationPublicId`.
+- V1 intentionally does not require that evaluation to be the latest
+  evaluation for the Inventory.
+- The selected evaluation and current locked Inventory must have equal version
+  and numerically equal available quantity.
+- Creation is immediate and produces `ACTIVE`.
+- `offeredQuantity` may be smaller than the evaluated/current available
+  quantity.
+- Only one open Offer may exist for an Inventory; non-overlapping historical
+  Offers remain possible with different evaluations.
+- Product and Restaurant currency must match; no FX conversion exists.
+- Price uses `BigDecimal`, final scale 2, and `RoundingMode.HALF_UP`.
+- The calculated Offer price must be positive and below original price, so V1
+  does not accept free or zero-discount Offers.
+- `expiresAt` must be after the server-generated `startAt`. V1 defines no
+  minimum or maximum duration.
+- Quantity inherits Inventory's implicit unit and performs no conversion.
 
-The following are technical V1 decisions rather than unresolved business
-assumptions:
+Remaining product/security decisions for later phases are:
 
-- V1 intentionally does not require latest-evaluation semantics. The client
-  selects a specific immutable evaluation, which is validated against current
-  Inventory state.
-- Offer currency must equal Product and Restaurant currency. V1 performs no
-  foreign-exchange conversion.
-- V1 inherits Inventory's implicit quantity semantics and performs no unit
-  conversion.
+- whether to introduce a separately configured numeric discount policy;
+- standardized customer-facing units of measure;
+- persisted expiry-transition and other lifecycle workflows;
+- the complete authenticated Restaurant-actor authorization contract; and
+- reservation, cancellation, ordering, and allocation semantics.
 
-The approval items are marketplace/governance decisions. None may be filled by
-AI, RAG, or an invented food-safety assumption.
+`expiresAt` remains a marketplace availability boundary, not a safety or
+shelf-life limit. No remaining decision may be filled by AI, RAG, or an
+invented food-safety assumption.
