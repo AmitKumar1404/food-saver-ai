@@ -1,0 +1,487 @@
+FOODSAVER AI - OFFER MANAGEMENT INTERVIEW QUESTIONS
+Java 21 | Spring Boot 4.1.1 | Spring Data JPA | MySQL
+
+These questions describe the implemented Offer Management V1 behavior.
+
+========================================================================
+1. OFFER MANAGEMENT FUNDAMENTALS
+========================================================================
+
+Q: What is an Offer in FoodSaver?
+A: An Offer is a Restaurant-owned marketplace record for a quantity of eligible surplus Inventory, with an immutable eligibility reference, price snapshot, availability window, and marketplace lifecycle status.
+
+Q: What is the complete business flow before an Offer is created?
+A: Restaurant -> Product -> Inventory -> Surplus Detection -> Food Eligibility Evaluation -> Offer.
+
+Q: Which endpoint creates an Offer?
+A: POST /api/v1/restaurants/{restaurantPublicId}/offers. A successful request returns HTTP 201 with OfferResponse.
+
+Q: Which Offer operations are implemented in V1?
+A: Only Offer creation. Listing, updating, pausing, closing, expiration scheduling, reservation, ordering, and payment are not implemented.
+
+Q: Does Surplus Detection automatically create an Offer?
+A: No. Surplus Detection identifies potential surplus. A persisted evaluation with status ELIGIBLE_FOR_OFFER is still required.
+
+========================================================================
+2. DOMAIN DESIGN
+========================================================================
+
+Q: Why is Offer a separate domain from Product and Inventory?
+A: Product owns catalog and base-price data, Inventory owns quantity accounting, and Offer owns marketplace price, quantity, eligibility, and availability snapshots. Separation prevents mixed responsibilities.
+
+Q: Why does Offer store direct Restaurant, Product, and Inventory references?
+A: They support ownership, consistency, history, and future marketplace queries. The service verifies that they all match the selected evaluation chain before persistence.
+
+Q: Why does Offer not store a direct SurplusDetection reference?
+A: The exact Surplus Detection is already reachable through Offer -> FoodEligibilityEvaluation -> SurplusDetection. Another foreign key would duplicate the relationship and add a consistency invariant.
+
+Q: Why does Offer store an explicit FoodEligibilityEvaluation reference?
+A: It preserves immutable evidence of the exact eligibility decision that authorized creation. This makes the Offer auditable and prevents later evaluations from rewriting its history.
+
+Q: Why are original price, discount, final price, and currency stored as snapshots?
+A: Product pricing may change later. Snapshots preserve what was offered and how the final price was derived at creation time.
+
+========================================================================
+3. JPA / HIBERNATE
+========================================================================
+
+Q: How is Offer mapped as a JPA entity?
+A: It uses @Entity and @Table(name = "offers"), an IDENTITY Long primary key, an application-generated UUID public ID, lazy mandatory ManyToOne relationships, EnumType.STRING status, and @Version.
+
+Q: Why are the four ManyToOne relationships LAZY?
+A: Lazy loading avoids fetching Restaurant, Product, Inventory, and evaluation data for every Offer query when those relationships are not needed.
+
+Q: Why are Offer relationships unidirectional?
+A: V1 does not need parent-side Offer collections. Unidirectional mappings reduce object-graph complexity, accidental eager loading, and recursive serialization risks.
+
+Q: Why are many Offer columns marked updatable = false?
+A: Identity, source references, price snapshots, quantity, and availability timestamps are immutable historical facts after creation.
+
+Q: What do @PrePersist and @PreUpdate do in Offer?
+A: @PrePersist generates publicId, defaults status to ACTIVE, and initializes audit timestamps. @PreUpdate refreshes updatedAt.
+
+Q: Why is OfferStatus persisted with EnumType.STRING?
+A: String values are readable and do not break when enum declaration order changes, unlike ordinal persistence.
+
+========================================================================
+4. DTO AND VALIDATION
+========================================================================
+
+Q: Which fields can the client submit in OfferCreateRequest?
+A: eligibilityEvaluationPublicId, offeredQuantity, discountPercentage, and expiresAt only.
+
+Q: Which values are intentionally server-controlled?
+A: Restaurant, Product, Inventory, originalPrice, offerPrice, currencyCode, startAt, status, version, audit timestamps, eligibility status, and internal IDs.
+
+Q: How is offeredQuantity validated at the DTO boundary?
+A: It is required, must be at least 0.001, and uses @Digits(integer = 9, fraction = 3).
+
+Q: How is discountPercentage validated at the DTO boundary?
+A: It is required and constrained to three integer digits and two fractional digits. V1 does not define a separate configurable business range.
+
+Q: Why is expiresAt also validated in the service?
+A: Bean Validation checks that it is present, but only the service knows the server-generated startAt. The service must verify expiresAt is strictly later.
+
+Q: Why does OfferResponse contain public UUIDs instead of entities?
+A: DTOs define a stable API contract, avoid exposing persistence internals, and prevent lazy proxies or internal database IDs from leaking.
+
+========================================================================
+5. BUSINESS LOGIC
+========================================================================
+
+Q: Why is ELIGIBLE_FOR_OFFER required?
+A: It is the exact deterministic workflow gate that permits Offer creation. NOT_ELIGIBLE and REQUIRES_REVIEW must block creation.
+
+Q: Why don't we use the latest evaluation?
+A: V1 accepts an explicitly selected immutable evaluation and validates its Inventory version and available-quantity snapshot against current locked Inventory. It avoids unsupported cross-module ordering and serialization semantics.
+
+Q: What lifecycle states must be ACTIVE during creation?
+A: Restaurant, Product, and Inventory must all be ACTIVE. These are platform lifecycle checks, not food-safety decisions.
+
+Q: Why does Offer creation not mutate Inventory?
+A: V1 has no reservation or allocation workflow. Decrementing or reserving Inventory here would mix marketplace publication with future ordering responsibilities.
+
+Q: Does Offer creation reserve Inventory?
+A: No. offeredQuantity is an immutable marketplace snapshot, not a reservation or sale allocation.
+
+Q: How is currency validated?
+A: Product and Restaurant currency codes must match. currencyCode is copied from Product, and V1 performs no foreign-exchange conversion.
+
+Q: How is startAt chosen?
+A: The service captures one Instant during the transaction and uses it as startAt and the reference time for expiry/open-Offer checks.
+
+========================================================================
+6. BIGDECIMAL AND PRICING
+========================================================================
+
+Q: Why use BigDecimal instead of double?
+A: Binary floating-point cannot exactly represent many decimal monetary values. BigDecimal provides deterministic decimal arithmetic and explicit scale and rounding.
+
+Q: Why compare BigDecimal using compareTo() instead of equals()?
+A: equals() considers scale, so 8.0 and 8.000 differ. compareTo() compares numeric value, which is correct for quantity snapshot matching.
+
+Q: Why is offerPrice calculated on the server?
+A: The server must enforce one trusted formula and prevent clients from submitting manipulated or inconsistent prices.
+
+Q: Why is originalPrice not accepted from the client?
+A: Product.basePrice is the authoritative source. Accepting a client price would allow stale or manipulated pricing.
+
+Q: What pricing formula is implemented?
+A: discountAmount = originalPrice * discountPercentage / 100, then offerPrice = originalPrice - discountAmount.
+
+Q: How is rounding performed?
+A: The final offerPrice is set to scale 2 with RoundingMode.HALF_UP. Rounding is applied once to the final monetary result.
+
+Q: Are free Offers allowed in implemented V1?
+A: No. The calculated Offer price must be positive and strictly below originalPrice.
+
+========================================================================
+7. TRANSACTIONS
+========================================================================
+
+Q: What does @Transactional protect in createOffer?
+A: It creates one atomic boundary for ownership lookup, evaluation validation, Inventory locking, staleness and quantity checks, conflict checks, pricing, persistence, and response mapping.
+
+Q: What happens if Offer save fails?
+A: The transaction rolls back, so no partial Offer is committed. Upstream Inventory and evaluation records are not intentionally modified.
+
+Q: Why is @Transactional on the service rather than the controller?
+A: The service owns the business use case and database consistency boundary. The controller should only bind HTTP input and delegate.
+
+Q: Does the transaction make Offer creation atomic with Inventory mutation?
+A: No Inventory mutation exists in V1. The transaction atomically validates current Inventory and persists the Offer.
+
+Q: Why is response mapping done inside the transaction?
+A: Offer relationships are lazy. Mapping inside the transaction ensures required public IDs can be read while the persistence context is available.
+
+========================================================================
+8. CONCURRENCY
+========================================================================
+
+Q: What happens if two requests create an Offer concurrently for the same Inventory?
+A: Both target the same Inventory lock. One proceeds first; the other waits, then rechecks duplicate/open Offer state and receives a conflict if the first Offer is still open.
+
+Q: What race condition would occur without the Inventory lock?
+A: Both transactions could observe no open Offer, both pass checks, and both persist overlapping ACTIVE Offers for the same Inventory.
+
+Q: How do we prevent duplicate Offers?
+A: The service checks existsByEligibilityEvaluationId, the Inventory lock serializes same-Inventory creation, and a unique database constraint on eligibility_evaluation_id is the final safeguard.
+
+Q: How do we prevent overlapping active Offers?
+A: While holding the Inventory lock, the service checks for an Offer with the same Inventory, status ACTIVE, and expiresAt after the transaction time.
+
+Q: What happens if the same request is submitted twice?
+A: The first may create an Offer. The second finds that the evaluation is already used and returns HTTP 409.
+
+Q: Does the current API provide general request idempotency?
+A: No. It prevents replay of the same eligibility evaluation, but it has no separate idempotency-key contract.
+
+========================================================================
+9. PESSIMISTIC LOCKING
+========================================================================
+
+Q: Why do we lock Inventory with PESSIMISTIC_WRITE?
+A: Inventory is the shared serialization point for Offer creation. The write lock prevents concurrent transactions from both passing final staleness and overlap checks.
+
+Q: Where is the lock declared?
+A: InventoryRepository.findByIdAndRestaurantId is annotated with @Lock(LockModeType.PESSIMISTIC_WRITE).
+
+Q: Why is the lock acquired before final staleness, quantity, and conflict checks?
+A: Those checks must observe a serialized Inventory state. Checking first and locking later would leave a race window.
+
+Q: Does PESSIMISTIC_WRITE mean Inventory must be updated?
+A: No. It controls concurrent access to the row. Offer creation deliberately does not change Inventory.
+
+Q: What operational risks come with pessimistic locks?
+A: Lock waits, timeouts, deadlocks, and reduced throughput under contention. Transactions should remain short and lock resources in a consistent order.
+
+========================================================================
+10. OPTIMISTIC LOCKING
+========================================================================
+
+Q: Why do we still use @Version on Offer?
+A: Future Offer status or lifecycle updates need lost-update protection. V1 creates Offers only, but the version prepares the entity for safe later mutations.
+
+Q: How does optimistic locking work?
+A: JPA includes the version in UPDATE predicates and increments it on successful updates. A stale updater affects no row and receives an optimistic-lock exception.
+
+Q: What is the difference between pessimistic and optimistic locking here?
+A: Pessimistic locking serializes current Offer creation through Inventory. Optimistic locking detects conflicting future updates to an Offer without holding a database lock for the whole interaction.
+
+Q: When would optimistic locking be preferable?
+A: When conflicts are uncommon and high concurrency matters, because it avoids long-held row locks and handles conflicts through retries or user feedback.
+
+========================================================================
+11. STALE DATA
+========================================================================
+
+Q: How does V1 define a stale eligibility evaluation?
+A: It is stale when current Inventory.version differs from evaluatedInventoryVersion or current availableQuantity is numerically different from evaluatedAvailableQuantity.
+
+Q: How would you handle an Inventory change after eligibility evaluation?
+A: Reject Offer creation with HTTP 409 and require a new appropriate evaluation. V1 does not silently reevaluate or bypass the snapshot.
+
+Q: Why check both Inventory version and available quantity?
+A: Version detects any persisted Inventory update, while quantity equality explicitly protects the quantity fact used by eligibility.
+
+Q: Why is there no evaluation TTL?
+A: V1 uses structural snapshot matching rather than an invented time limit. A temporal policy would need an explicit authoritative business rule.
+
+Q: Does a newer evaluation automatically invalidate an older one?
+A: No. The selected evaluation remains valid if it is ELIGIBLE_FOR_OFFER and its snapshot still matches current Inventory.
+
+========================================================================
+12. DATABASE CONSTRAINTS AND INDEXES
+========================================================================
+
+Q: Why is a unique database constraint still needed if the service checks duplicates?
+A: Application checks are not an absolute integrity boundary. The database constraint protects against races, bugs, and alternate write paths.
+
+Q: Which unique constraints exist on Offer?
+A: uk_offers_public_id on public_id and uk_offers_eligibility_evaluation on eligibility_evaluation_id.
+
+Q: Why is inventory_id not globally unique?
+A: One Inventory may have multiple historical, non-overlapping Offers. A permanent unique constraint would block legitimate later history.
+
+Q: Which V1 index supports open-Offer detection?
+A: idx_offers_inventory_status_expires on inventory_id, status, expires_at.
+
+Q: Which check constraints are declared on Offer?
+A: offered_quantity > 0, original_price > 0, offer_price >= 0, and expires_at > start_at.
+
+Q: Why are service validation and database constraints both needed?
+A: Service validation produces clear domain errors, while database constraints provide final integrity protection.
+
+========================================================================
+13. EXCEPTION HANDLING
+========================================================================
+
+Q: Why use a centralized GlobalExceptionHandler?
+A: It gives controllers a consistent ErrorResponse structure and keeps HTTP mapping out of business services.
+
+Q: What does OfferValidationException represent?
+A: A bad client request that passes DTO shape validation but violates request-time rules, currently an expiresAt that is not after server-generated startAt.
+
+Q: What does OfferEligibilityException represent?
+A: Business conflicts such as an ineligible evaluation, stale Inventory, inactive lifecycle state, invalid quantity against availability, currency mismatch, or pricing conflict.
+
+Q: What does OfferAlreadyExistsException represent?
+A: Reuse of an eligibility evaluation or an existing open ACTIVE Offer for the Inventory.
+
+Q: Why have a separate FoodEligibilityEvaluationNotFoundException?
+A: It expresses a missing or ownership-hidden evaluation and maps it to 404 without misclassifying it as a 409 eligibility conflict.
+
+Q: Why should exceptions not expose SQL or stack traces?
+A: They leak implementation details and may reveal sensitive schema or tenant information. Clients should receive controlled ErrorResponse data.
+
+========================================================================
+14. HTTP STATUS CODES
+========================================================================
+
+Q: What is the difference between 400, 404, and 409 in this API?
+A: 400 means malformed or invalid client input, 404 means the Restaurant/evaluation is absent from the caller's ownership scope, and 409 means valid input conflicts with current business or persisted state.
+
+Q: Why is invalid expiresAt 400 while stale eligibility is 409?
+A: expiresAt is invalid client input relative to server start time. Staleness means the request shape is valid but current Inventory no longer matches the selected evaluation.
+
+Q: Which cases return 400?
+A: Bean Validation failures, malformed path UUIDs, and invalid expiresAt return the centralized ErrorResponse with status 400.
+
+Q: Which cases return 409?
+A: NOT_ELIGIBLE, REQUIRES_REVIEW, stale state, inactive lifecycle, quantity/currency/pricing conflicts, duplicate evaluation, and overlapping open Offer.
+
+Q: Why does successful creation return 201 instead of 200?
+A: The operation creates a new persisted Offer resource, so HTTP 201 Created is the appropriate semantic response.
+
+========================================================================
+15. OWNERSHIP AND MULTI-TENANT DATA ISOLATION
+========================================================================
+
+Q: Why does cross-Restaurant access return 404?
+A: Returning 404 avoids confirming that another Restaurant's evaluation exists, reducing cross-tenant information disclosure.
+
+Q: How is evaluation ownership resolved?
+A: OfferServiceImpl uses an ownership-scoped JPQL join from evaluation through Surplus Detection, Inventory, Product, and Restaurant.
+
+Q: Why are relationship checks repeated after the lookup?
+A: Defense in depth verifies the locked Inventory, Product, Restaurant, and evaluation chain are still internally consistent before persistence.
+
+Q: Is ownership validation the same as authentication?
+A: No. V1 implements data isolation by Restaurant path and relationships, but it does not implement Spring Security or caller authentication.
+
+Q: Why is restaurantPublicId in the path rather than the request body?
+A: It makes the ownership scope explicit and prevents the body from independently supplying or overriding Restaurant identity.
+
+========================================================================
+16. TESTING
+========================================================================
+
+Q: What does the current full test suite report?
+A: 82 tests, 0 failures, 0 errors, 0 skipped, and BUILD SUCCESS.
+
+Q: What does OfferCreationIntegrationTests exercise?
+A: The real Spring MVC, service, transaction, JPA, and MySQL flow, including persistence, conflicts, ownership hiding, mutation checks, and lock annotation verification.
+
+Q: How is explicit non-latest evaluation behavior tested?
+A: The test creates an eligible evaluation, then a newer NOT_ELIGIBLE evaluation, explicitly submits the older eligible public ID, and verifies successful creation.
+
+Q: How do tests prove Inventory is not mutated?
+A: They snapshot available, reserved, sold, status, and version before creation, reload Inventory afterward, and compare the complete state.
+
+Q: How do tests prove the evaluation is not mutated?
+A: They compare status, evaluated version, evaluated quantity, evaluatedAt, createdAt, and updatedAt before and after Offer creation.
+
+Q: Why use database-backed integration tests in addition to mocked controller tests?
+A: Mocked tests verify HTTP delegation and mappings; database tests verify actual JPA mappings, transactions, locks, queries, constraints, and persistence behavior.
+
+========================================================================
+17. PRODUCTION SCENARIOS
+========================================================================
+
+Q: How would you debug an unexpected 409?
+A: Correlate the request and logs, identify the mapped exception, then inspect evaluation status, Inventory version/quantity, lifecycle states, currency, quantity, price outcome, duplicate evaluation, and open Offers.
+
+Q: How would you investigate a duplicate Offer in production?
+A: Check the eligibility_evaluation_id unique constraint, request correlation data, transaction timing, retries, Offer rows for the Inventory, and whether any write path bypassed OfferService.
+
+Q: What metrics would you add?
+A: Creation success rate, 400/404/409 counts by reason, lock wait time, lock timeout/deadlock count, transaction latency, unique-constraint violations, and Offer persistence failures.
+
+Q: What logs are useful without leaking sensitive data?
+A: Correlation ID, public UUIDs, conflict category, timing, and status outcome. Avoid internal IDs, SQL, credentials, rule internals, and cross-tenant details.
+
+Q: How would you handle transient deadlocks or lock timeouts?
+A: Keep transactions short, use consistent lock ordering, monitor frequency, and apply bounded retries only for known transient database errors.
+
+========================================================================
+18. FOOD ELIGIBILITY INTEGRATION
+========================================================================
+
+Q: What is the role of Food Eligibility in Offer creation?
+A: It is the mandatory upstream deterministic gate. Offer Management consumes a persisted decision but does not run or modify eligibility rules.
+
+Q: Why must NOT_ELIGIBLE block creation?
+A: It explicitly says the deterministic workflow does not permit an Offer for that evaluated snapshot.
+
+Q: Why must REQUIRES_REVIEW block automatic creation?
+A: It is not an approval. Proceeding automatically would bypass the unresolved deterministic workflow outcome.
+
+Q: Why is the evaluation immutable?
+A: Immutability preserves audit evidence: policy metadata, status, Inventory version, quantity snapshot, and evaluation time cannot be rewritten by Offer creation.
+
+Q: Why isn't POTENTIAL_SURPLUS enough?
+A: Surplus Detection only reports a quantity condition. It neither grants marketplace eligibility nor certifies food safety.
+
+========================================================================
+19. AI / RAG SAFETY BOUNDARY
+========================================================================
+
+Q: Why is Offer status not a food-safety status?
+A: ACTIVE, EXPIRED, SOLD_OUT, and CLOSED describe marketplace lifecycle only. ACTIVE does not mean safe, and EXPIRED does not mean unsafe.
+
+Q: What can AI do in this module in the future?
+A: It may recommend discounts, rank already eligible Offers, suggest notification audiences, or summarize performance through controlled tools.
+
+Q: What must AI never be allowed to do?
+A: It must not mark food eligible, override eligibility, bypass ownership/staleness checks, certify safety, mutate Inventory directly, or write Offers without authorization and deterministic validation.
+
+Q: Why can't RAG override deterministic rules?
+A: Retrieved text may be incomplete, stale, or non-authoritative. Deterministic persisted policies and service invariants remain the write gate.
+
+Q: How would you design a Pricing Agent safely?
+A: Make it advisory. It proposes a discount with explanation; an authorized workflow submits it through the same Offer API, which still enforces all eligibility, ownership, quantity, currency, and pricing invariants.
+
+========================================================================
+20. KAFKA / REDIS FUTURE ARCHITECTURE
+========================================================================
+
+Q: How would Kafka be integrated safely?
+A: Emit versioned events with public IDs only after the Offer transaction succeeds, preferably through a transactional outbox and idempotent consumers.
+
+Q: Why should OfferCreated be published after database commit?
+A: Publishing before commit could announce an Offer that later rolls back. Consumers would then observe data that does not exist.
+
+Q: Why might a transactional outbox be needed?
+A: It atomically stores the Offer and an event record in one database transaction, then publishes asynchronously, avoiding the database/Kafka dual-write gap.
+
+Q: Why is Redis not the source of truth?
+A: Cache entries can expire, be evicted, or become stale. MySQL remains authoritative for Offer history, eligibility references, pricing, and Inventory.
+
+Q: What could Redis safely support later?
+A: Short-lived read caching, rate limiting, or carefully designed reservation holds reconciled with authoritative database state.
+
+========================================================================
+21. ARCHITECTURE AND DESIGN QUESTIONS
+========================================================================
+
+Q: Which layer owns which Offer responsibility?
+A: Controller owns HTTP/OpenAPI, DTOs own API shape, service owns business rules and transactions, repositories own persistence checks/locks, entity owns persistence mapping, and GlobalExceptionHandler owns error responses.
+
+Q: Why is the controller intentionally thin?
+A: Thin controllers are easier to test and keep business logic reusable, transactional, and independent of HTTP.
+
+Q: Why are internal database IDs not exposed?
+A: Internal IDs couple clients to storage, make enumeration easier, and can leak implementation or tenant information. Public UUIDs form the stable API identity.
+
+Q: How would you implement idempotency in production?
+A: Accept an idempotency key scoped to the Restaurant and operation, persist its request fingerprint and result under a unique constraint, and replay the original response for matching retries.
+
+Q: How would you scale Offer creation to multiple application instances?
+A: Keep services stateless and rely on shared MySQL transactions, row locks, indexes, and unique constraints. In-memory synchronized blocks would not coordinate instances.
+
+Q: What would you change if Offer volume became very high?
+A: Measure first, optimize indexed queries and transaction duration, add read replicas/caches for reads, partition archival data if justified, publish events through an outbox, and preserve database integrity for writes.
+
+========================================================================
+22. ADVANCED "WHAT WOULD YOU DO IF..." SCENARIOS
+========================================================================
+
+Q: What would you do if Inventory changed between evaluation and Offer creation?
+A: Reject with 409 because the version or available quantity no longer matches, then obtain a new evaluation for the current state.
+
+Q: What would you do if two application instances receive requests for the same Inventory?
+A: Both use the shared database. PESSIMISTIC_WRITE serializes them on the Inventory row, and the second revalidates duplicate/open Offer state.
+
+Q: What would you do if an ACTIVE Offer has already expired but its status was not changed to EXPIRED?
+A: It does not block creation because the open query also requires expiresAt to be after transaction time. V1 has no expiration scheduler.
+
+Q: What would you do if a request retries after a network timeout?
+A: Query by the selected evaluation or use a future idempotency key before retrying. The current unique evaluation constraint prevents a second Offer but the retry may receive 409 rather than the original 201.
+
+Q: What would you do if Kafka is unavailable after the Offer commits?
+A: With a transactional outbox, keep the unpublished event in MySQL and retry asynchronously. Do not roll back or corrupt the committed Offer through an unsafe dual write.
+
+Q: How would you investigate an oversell problem in a future reservation system?
+A: Trace reservation transactions, atomic quantity updates, lock/version conflicts, hold expiry, retries, and reconciliation. Offer creation is not the allocation boundary and currently cannot itself oversell stock.
+
+Q: What would you do if lock contention became a bottleneck?
+A: Measure lock wait time, shorten the transaction, confirm indexes, avoid unrelated work while locked, consider bounded retries, and redesign allocation only with proven need—without weakening duplicate/overlap integrity.
+
+Q: What would you do if Product currency changed after an Offer was created?
+A: Keep the existing Offer currency and prices unchanged as historical snapshots. New Offers must validate the current Product and Restaurant currencies.
+
+Q: What would you do if the business later allowed free Offers?
+A: Define and approve the policy, update service price invariants and database constraints where needed, document API behavior, and add boundary and integration tests.
+
+Q: What would you do if an AI recommendation conflicts with service rules?
+A: Reject it through the same deterministic service validation. AI output is advisory and never has authority to bypass hard controls.
+
+========================================================================
+TOP 15 QUESTIONS TO DEFINITELY PREPARE
+========================================================================
+
+1. Why does Offer store an explicit FoodEligibilityEvaluation reference?
+2. Why don't we use the latest evaluation?
+3. Why is ELIGIBLE_FOR_OFFER required?
+4. Why is Offer status not a food-safety status?
+5. Why does Offer creation not mutate or reserve Inventory?
+6. Why do we lock Inventory with PESSIMISTIC_WRITE?
+7. What happens if two requests create an Offer concurrently?
+8. What is the difference between pessimistic and optimistic locking here?
+9. How are duplicate and overlapping Offers prevented?
+10. Why use BigDecimal and compareTo() for money and quantities?
+11. Why is pricing calculated server-side?
+12. What does @Transactional protect in createOffer?
+13. What is the difference between HTTP 400, 404, and 409 in this API?
+14. Why does cross-Restaurant access return 404?
+15. What may AI/RAG do, and what must they never be allowed to do?
