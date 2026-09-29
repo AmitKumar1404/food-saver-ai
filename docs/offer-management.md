@@ -205,7 +205,8 @@ The one-evaluation-to-one-Offer rule is enforced by a unique constraint on
 An Inventory-wide permanent unique constraint is not implemented. Such a
 constraint would prevent legitimate historical re-offering after an Offer
 expires or closes. Instead, creation serializes on the Inventory row and checks
-for an existing open Offer whose `expires_at` is after the new creation time.
+for an existing open Offer whose `expires_at` is after the new creation time
+using a post-lock current/locking read.
 
 ## 6. Critical Safety Boundary
 
@@ -860,8 +861,9 @@ The body is `OfferResponse`.
 
 ### 14.5 Error responses
 
-- `400 Bad Request`: malformed UUID, invalid DTO shape, invalid decimal
-  precision, DTO-level non-positive quantity, or invalid expiry range.
+- `400 Bad Request`: malformed path or request-body UUID, malformed JSON,
+  invalid DTO shape, invalid decimal precision, DTO-level non-positive
+  quantity, or invalid expiry range.
 - `404 Not Found`: Restaurant or ownership-scoped eligibility chain not found.
 - `409 Conflict`: evaluation is not eligible, evaluation is stale, current
   lifecycle state blocks creation, evaluation was already used, an open Offer
@@ -962,17 +964,25 @@ database-backed sequence:
 9. Validate `offeredQuantity > 0`,
    `offeredQuantity <= currentInventory.availableQuantity`, and
    `offeredQuantity <= evaluation.evaluatedAvailableQuantity`.
-10. Check that no Offer already uses the selected evaluation.
-11. Check that no other open `ACTIVE` Offer exists for the Inventory.
+10. Use a current/locking read to check that no Offer already uses the selected
+    evaluation.
+11. Use a current/locking read to check that no other open `ACTIVE` Offer
+    exists for the Inventory.
 12. Calculate pricing deterministically.
 13. Persist the Offer.
 14. Commit.
 
-The lock serializes V1 Offer creation checks for the same Inventory. A
-concurrent creator waits and, after acquiring the lock, sees the first open
-Offer and receives `409 Conflict`. The unique constraint on
-`eligibility_evaluation_id` is the database fallback for two requests using the
-same evaluation.
+The Inventory lock serializes V1 Offer creation checks for the same Inventory.
+After a waiting transaction acquires that lock, the duplicate and open-Offer
+checks use pessimistic locking reads rather than an earlier repeatable-read
+snapshot. The transaction therefore observes an Offer committed by the first
+creator and returns `409 Conflict`. The unique constraint on
+`eligibility_evaluation_id` remains the final database defense for two requests
+using the same evaluation. Offer persistence is flushed inside the service
+transaction so a violation of that specific named constraint is translated to
+the same `OfferAlreadyExistsException` and `409 Conflict` contract. Other
+database integrity violations are not classified as Offer conflicts. Database
+constraints alone do not prevent overlapping time windows.
 
 Offer creation does not mutate Inventory. V1 does not attempt to serialize Food
 Eligibility Evaluation creation with Offer creation. Redis and distributed
@@ -991,8 +1001,10 @@ expiresAt > current transaction time
 Every V1 Offer starts immediately from a server-generated `startAt`. The
 practical V1 rule is therefore that a new Offer cannot be created while another
 `ACTIVE` Offer for the same Inventory remains open. The application-level
-query and check execute while the Inventory pessimistic write lock is held.
-This is an intentional V1 simplification.
+queries execute as current/locking reads while the Inventory pessimistic write
+lock is held. The Inventory lock, transaction, and post-lock current reads work
+together to prevent overlapping open Offers. This is an intentional V1
+simplification.
 
 An existing `ACTIVE` row whose `expiresAt <= transactionTime` does not block
 creation even if a scheduled status transition has not yet changed it to
@@ -1035,7 +1047,8 @@ The transaction includes:
 - duplicate-evaluation Offer check;
 - open `ACTIVE` Offer check for the Inventory;
 - deterministic pricing calculation;
-- Offer persistence; and
+- Offer persistence and flush, including translation of the named
+  eligibility-evaluation unique constraint; and
 - response mapping while required lazy relationships are available.
 
 If persistence or any final validation fails, no Offer row is committed.
@@ -1063,7 +1076,9 @@ The implementation uses:
   disclosing cross-Restaurant existence.
 
 `RestaurantNotFoundException` handles a missing Restaurant. The centralized
-type-mismatch handler maps malformed UUID path values to `400`.
+type-mismatch handler maps malformed UUID path values to `400`, while the
+message-not-readable handler maps malformed JSON and malformed typed
+request-body values to the same `400 ErrorResponse` contract.
 
 `OfferNotFoundException` is not required by the create-only V1 endpoint. Add it
 only when a read or lifecycle API exists.
@@ -1310,7 +1325,7 @@ The complete Maven suite was run against the configured MySQL database after
 V1 implementation:
 
 ```text
-Tests run: 82
+Tests run: 89
 Failures: 0
 Errors: 0
 Skipped: 0
@@ -1323,7 +1338,7 @@ BUILD SUCCESS
 
 - successful `201 OfferResponse` mapping and service delegation;
 - DTO validation failures through the centralized `400 ErrorResponse`;
-- malformed Restaurant UUID handling;
+- malformed Restaurant path UUID, request-body UUID, and JSON handling;
 - ownership-hidden evaluation `404`;
 - eligibility, staleness, duplicate, and overlap `409` mappings;
 - absence of internal IDs, version, safety, and AI metadata; and
@@ -1347,6 +1362,16 @@ transaction, JPA, and MySQL path. It covers:
   `BigDecimal.compareTo`;
 - quantity rejection against current and evaluated availability;
 - duplicate-evaluation and open-Offer conflicts;
+- concurrent creation with two independent transactions, including a waiting
+  creator that established a repeatable-read snapshot before the winning
+  transaction committed; the test confirms the losing MySQL connection in
+  `performance_schema.data_lock_waits` before releasing the winner;
+- concurrent creation using the same eligibility evaluation, with exactly one
+  persisted Offer and a controlled duplicate conflict for the losing request;
+- focused persistence tests proving that only
+  `uk_offers_eligibility_evaluation` is translated to an Offer conflict;
+- real MySQL flush verification that the named evaluation constraint is
+  translated inside the service transaction;
 - ownership-hidden evaluation lookup;
 - malformed Restaurant UUID and invalid-expiry `400` behavior; and
 - reflection verification that the Inventory repository method retains

@@ -8,6 +8,7 @@ import java.util.Map;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.ObjectError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -65,6 +66,20 @@ public class GlobalExceptionHandler {
 				Map.of(
 						parameterName,
 						List.of("Must be a valid " + expectedType)));
+
+		return ResponseEntity.badRequest().body(response);
+	}
+
+	@ExceptionHandler(HttpMessageNotReadableException.class)
+	public ResponseEntity<ErrorResponse> handleHttpMessageNotReadable(
+			HttpMessageNotReadableException exception,
+			HttpServletRequest request) {
+		ErrorResponse response = new ErrorResponse(
+				Instant.now(),
+				HttpStatus.BAD_REQUEST.value(),
+				"Malformed request body",
+				request.getRequestURI(),
+				Map.of());
 
 		return ResponseEntity.badRequest().body(response);
 	}

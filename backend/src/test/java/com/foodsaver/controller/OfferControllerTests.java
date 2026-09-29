@@ -165,6 +165,53 @@ class OfferControllerTests {
 	}
 
 	@Test
+	void returnsErrorResponseForMalformedEvaluationUuid() throws Exception {
+		String requestBody = """
+				{
+				  "eligibilityEvaluationPublicId": "not-a-uuid",
+				  "offeredQuantity": 2.000,
+				  "discountPercentage": 20.00,
+				  "expiresAt": "%s"
+				}
+				""".formatted(EXPIRES_AT);
+
+		mockMvc.perform(request(requestBody))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.status").value(400))
+				.andExpect(jsonPath("$.message").value("Malformed request body"))
+				.andExpect(jsonPath("$.path")
+						.value("/api/v1/restaurants/"
+								+ RESTAURANT_PUBLIC_ID
+								+ "/offers"))
+				.andExpect(jsonPath("$.errors").isEmpty())
+				.andExpect(jsonPath("$.error").doesNotExist());
+
+		verifyNoInteractions(offerService);
+	}
+
+	@Test
+	void returnsErrorResponseForMalformedJson() throws Exception {
+		String requestBody = """
+				{
+				  "eligibilityEvaluationPublicId": "%s",
+				  "offeredQuantity": 2.000
+				""".formatted(EVALUATION_PUBLIC_ID);
+
+		mockMvc.perform(request(requestBody))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.status").value(400))
+				.andExpect(jsonPath("$.message").value("Malformed request body"))
+				.andExpect(jsonPath("$.path")
+						.value("/api/v1/restaurants/"
+								+ RESTAURANT_PUBLIC_ID
+								+ "/offers"))
+				.andExpect(jsonPath("$.errors").isEmpty())
+				.andExpect(jsonPath("$.error").doesNotExist());
+
+		verifyNoInteractions(offerService);
+	}
+
+	@Test
 	void returnsNotFoundWhenEvaluationIsMissingOrOwnedByAnotherRestaurant()
 			throws Exception {
 		arrangeFailure(new FoodEligibilityEvaluationNotFoundException(

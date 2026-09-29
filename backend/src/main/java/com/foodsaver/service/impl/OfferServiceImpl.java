@@ -6,6 +6,8 @@ import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
 
+import org.hibernate.exception.ConstraintViolationException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -39,6 +41,8 @@ public class OfferServiceImpl implements OfferService {
 
 	private static final BigDecimal ONE_HUNDRED = new BigDecimal("100");
 	private static final int MONEY_SCALE = 2;
+	private static final String ELIGIBILITY_EVALUATION_UNIQUE_CONSTRAINT =
+			"uk_offers_eligibility_evaluation";
 
 	private final RestaurantRepository restaurantRepository;
 	private final InventoryRepository inventoryRepository;
@@ -114,7 +118,35 @@ public class OfferServiceImpl implements OfferService {
 				request.getExpiresAt());
 		offer.setStatus(OfferStatus.ACTIVE);
 
-		return toResponse(offerRepository.save(offer));
+		return toResponse(saveOffer(offer));
+	}
+
+	Offer saveOffer(Offer offer) {
+		try {
+			return offerRepository.saveAndFlush(offer);
+		} catch (DataIntegrityViolationException exception) {
+			if (isEligibilityEvaluationUniqueConstraint(exception)) {
+				throw new OfferAlreadyExistsException(
+						"An Offer already exists for the selected eligibility evaluation",
+						exception);
+			}
+			throw exception;
+		}
+	}
+
+	private boolean isEligibilityEvaluationUniqueConstraint(Throwable exception) {
+		Throwable cause = exception;
+		while (cause != null) {
+			if (cause instanceof ConstraintViolationException constraintViolation) {
+				String constraintName = constraintViolation.getConstraintName();
+				return ELIGIBILITY_EVALUATION_UNIQUE_CONSTRAINT.equals(constraintName)
+						|| constraintName != null
+								&& constraintName.endsWith(
+										"." + ELIGIBILITY_EVALUATION_UNIQUE_CONSTRAINT);
+			}
+			cause = cause.getCause();
+		}
+		return false;
 	}
 
 	private OwnedEvaluation findOwnedEvaluation(
@@ -244,14 +276,17 @@ public class OfferServiceImpl implements OfferService {
 			FoodEligibilityEvaluation evaluation,
 			Inventory inventory,
 			Instant transactionTime) {
-		if (offerRepository.existsByEligibilityEvaluationId(evaluation.getId())) {
+		if (offerRepository.findFirstByEligibilityEvaluationId(
+				evaluation.getId()).isPresent()) {
 			throw new OfferAlreadyExistsException(
 					"An Offer already exists for the selected eligibility evaluation");
 		}
-		if (offerRepository.existsByInventoryIdAndStatusAndExpiresAtAfter(
+		if (offerRepository
+				.findFirstByInventoryIdAndStatusAndExpiresAtAfterOrderByIdAsc(
 				inventory.getId(),
 				OfferStatus.ACTIVE,
-				transactionTime)) {
+				transactionTime)
+				.isPresent()) {
 			throw new OfferAlreadyExistsException(
 					"An open Offer already exists for the selected Inventory");
 		}

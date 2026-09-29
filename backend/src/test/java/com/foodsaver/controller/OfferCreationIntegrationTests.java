@@ -2,7 +2,9 @@ package com.foodsaver.controller;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -10,7 +12,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -18,13 +27,21 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.util.AopTestUtils;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.context.WebApplicationContext;
 
+import com.foodsaver.dto.request.OfferCreateRequest;
 import com.foodsaver.entity.FoodEligibilityEvaluation;
 import com.foodsaver.entity.Inventory;
 import com.foodsaver.entity.Offer;
@@ -39,12 +56,14 @@ import com.foodsaver.enums.ProductCategory;
 import com.foodsaver.enums.ProductStatus;
 import com.foodsaver.enums.RestaurantStatus;
 import com.foodsaver.enums.SurplusDetectionStatus;
+import com.foodsaver.exception.OfferAlreadyExistsException;
 import com.foodsaver.repository.FoodEligibilityEvaluationRepository;
 import com.foodsaver.repository.InventoryRepository;
 import com.foodsaver.repository.OfferRepository;
 import com.foodsaver.repository.ProductRepository;
 import com.foodsaver.repository.RestaurantRepository;
 import com.foodsaver.repository.SurplusDetectionRepository;
+import com.foodsaver.service.OfferService;
 
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
@@ -59,6 +78,17 @@ class OfferCreationIntegrationTests {
 	private static final BigDecimal AVAILABLE_QUANTITY = new BigDecimal("8.000");
 	private static final BigDecimal OFFERED_QUANTITY = new BigDecimal("2.000");
 	private static final BigDecimal DISCOUNT_PERCENTAGE = new BigDecimal("20.00");
+	private static final String INVENTORY_LOCK_WAIT_QUERY = """
+			select count(*)
+			from performance_schema.data_lock_waits waits
+			join performance_schema.data_locks requested
+			  on requested.engine_lock_id = waits.requesting_engine_lock_id
+			join performance_schema.threads threads
+			  on threads.thread_id = requested.thread_id
+			where threads.processlist_id = ?
+			  and requested.object_schema = database()
+			  and requested.object_name = 'inventory'
+			""";
 
 	@Autowired
 	private WebApplicationContext applicationContext;
@@ -80,6 +110,15 @@ class OfferCreationIntegrationTests {
 
 	@Autowired
 	private OfferRepository offerRepository;
+
+	@Autowired
+	private OfferService offerService;
+
+	@Autowired
+	private PlatformTransactionManager transactionManager;
+
+	@Autowired
+	private JdbcTemplate jdbcTemplate;
 
 	@Autowired
 	private EntityManager entityManager;
@@ -266,6 +305,246 @@ class OfferCreationIntegrationTests {
 	}
 
 	@Test
+	@Transactional(propagation = Propagation.NOT_SUPPORTED)
+	void concurrentCreationUsesCurrentOfferStateAfterWaitingForInventoryLock()
+			throws Exception {
+		DomainFixture fixture = createFixture();
+		FoodEligibilityEvaluation firstEvaluation = createEligibleEvaluation(fixture);
+		FoodEligibilityEvaluation secondEvaluation = createEligibleEvaluation(fixture);
+		TransactionTemplate transactionTemplate =
+				new TransactionTemplate(transactionManager);
+		transactionTemplate.setIsolationLevel(
+				TransactionDefinition.ISOLATION_REPEATABLE_READ);
+		CountDownLatch inventoryLocked = new CountDownLatch(1);
+		CountDownLatch secondSnapshotEstablished = new CountDownLatch(1);
+		CountDownLatch allowFirstTransactionToCommit = new CountDownLatch(1);
+		AtomicLong secondConnectionId = new AtomicLong();
+		ExecutorService executor = Executors.newFixedThreadPool(2);
+		Future<?> firstCreation = null;
+		Future<RuntimeException> secondCreation = null;
+		Throwable testFailure = null;
+
+		try {
+			firstCreation = executor.submit(() ->
+					transactionTemplate.executeWithoutResult(status -> {
+						inventoryRepository.findByIdAndRestaurantId(
+										fixture.inventory().getId(),
+										fixture.restaurant().getId())
+								.orElseThrow();
+						inventoryLocked.countDown();
+						await(allowFirstTransactionToCommit);
+						offerService.createOffer(
+								fixture.restaurant().getPublicId(),
+								offerRequest(firstEvaluation));
+					}));
+
+			secondCreation = executor.submit(() -> {
+				await(inventoryLocked);
+				try {
+					transactionTemplate.executeWithoutResult(status -> {
+						restaurantRepository.findByPublicId(
+										fixture.restaurant().getPublicId())
+								.orElseThrow();
+						secondConnectionId.set(currentMysqlConnectionId());
+						secondSnapshotEstablished.countDown();
+						offerService.createOffer(
+								fixture.restaurant().getPublicId(),
+								offerRequest(secondEvaluation));
+					});
+					throw new AssertionError(
+							"Concurrent creation should have detected the open Offer");
+				} catch (RuntimeException exception) {
+					return exception;
+				}
+			});
+
+			await(secondSnapshotEstablished);
+			awaitInventoryLockWait(secondConnectionId.get());
+			allowFirstTransactionToCommit.countDown();
+			firstCreation.get(10, TimeUnit.SECONDS);
+			RuntimeException conflict = secondCreation.get(10, TimeUnit.SECONDS);
+
+			OfferAlreadyExistsException alreadyExists =
+					assertInstanceOf(OfferAlreadyExistsException.class, conflict);
+			assertEquals(
+					"An open Offer already exists for the selected Inventory",
+					alreadyExists.getMessage());
+
+			long openOfferCount = transactionTemplate.execute(status ->
+					offerRepository.findAll().stream()
+							.filter(offer -> offer.getInventory().getId()
+									.equals(fixture.inventory().getId()))
+							.filter(offer -> offer.getStatus() == OfferStatus.ACTIVE)
+							.filter(offer -> offer.getExpiresAt().isAfter(Instant.now()))
+							.count());
+			assertEquals(1L, openOfferCount);
+			assertFalse(offerRepository.existsByEligibilityEvaluationId(
+					secondEvaluation.getId()));
+		} catch (Exception | AssertionError failure) {
+			testFailure = failure;
+			throw failure;
+		} finally {
+			allowFirstTransactionToCommit.countDown();
+			shutdownExecutor(
+					executor,
+					testFailure,
+					firstCreation,
+					secondCreation);
+			cleanupCommittedFixturePreservingFailure(
+					transactionTemplate,
+					fixture,
+					List.of(firstEvaluation, secondEvaluation),
+					testFailure);
+		}
+	}
+
+	@Test
+	@Transactional(propagation = Propagation.NOT_SUPPORTED)
+	void concurrentCreationForSameEvaluationReturnsControlledDuplicateConflict()
+			throws Exception {
+		DomainFixture fixture = createFixture();
+		FoodEligibilityEvaluation evaluation = createEligibleEvaluation(fixture);
+		TransactionTemplate transactionTemplate =
+				new TransactionTemplate(transactionManager);
+		transactionTemplate.setIsolationLevel(
+				TransactionDefinition.ISOLATION_REPEATABLE_READ);
+		CountDownLatch inventoryLocked = new CountDownLatch(1);
+		CountDownLatch secondSnapshotEstablished = new CountDownLatch(1);
+		CountDownLatch allowFirstTransactionToCommit = new CountDownLatch(1);
+		AtomicLong secondConnectionId = new AtomicLong();
+		ExecutorService executor = Executors.newFixedThreadPool(2);
+		Future<?> firstCreation = null;
+		Future<RuntimeException> secondCreation = null;
+		Throwable testFailure = null;
+
+		try {
+			firstCreation = executor.submit(() ->
+					transactionTemplate.executeWithoutResult(status -> {
+						inventoryRepository.findByIdAndRestaurantId(
+										fixture.inventory().getId(),
+										fixture.restaurant().getId())
+								.orElseThrow();
+						inventoryLocked.countDown();
+						await(allowFirstTransactionToCommit);
+						offerService.createOffer(
+								fixture.restaurant().getPublicId(),
+								offerRequest(evaluation));
+					}));
+
+			secondCreation = executor.submit(() -> {
+				await(inventoryLocked);
+				try {
+					transactionTemplate.executeWithoutResult(status -> {
+						restaurantRepository.findByPublicId(
+										fixture.restaurant().getPublicId())
+								.orElseThrow();
+						secondConnectionId.set(currentMysqlConnectionId());
+						secondSnapshotEstablished.countDown();
+						offerService.createOffer(
+								fixture.restaurant().getPublicId(),
+								offerRequest(evaluation));
+					});
+					throw new AssertionError(
+							"Concurrent creation should have detected the duplicate Offer");
+				} catch (RuntimeException exception) {
+					return exception;
+				}
+			});
+
+			await(secondSnapshotEstablished);
+			awaitInventoryLockWait(secondConnectionId.get());
+			allowFirstTransactionToCommit.countDown();
+			firstCreation.get(10, TimeUnit.SECONDS);
+			RuntimeException conflict = secondCreation.get(10, TimeUnit.SECONDS);
+
+			OfferAlreadyExistsException alreadyExists =
+					assertInstanceOf(OfferAlreadyExistsException.class, conflict);
+			assertEquals(
+					"An Offer already exists for the selected eligibility evaluation",
+					alreadyExists.getMessage());
+
+			long evaluationOfferCount = transactionTemplate.execute(status ->
+					offerRepository.findAll().stream()
+							.filter(offer -> offer.getEligibilityEvaluation().getId()
+									.equals(evaluation.getId()))
+							.count());
+			assertEquals(1L, evaluationOfferCount);
+		} catch (Exception | AssertionError failure) {
+			testFailure = failure;
+			throw failure;
+		} finally {
+			allowFirstTransactionToCommit.countDown();
+			shutdownExecutor(
+					executor,
+					testFailure,
+					firstCreation,
+					secondCreation);
+			cleanupCommittedFixturePreservingFailure(
+					transactionTemplate,
+					fixture,
+					List.of(evaluation),
+					testFailure);
+		}
+	}
+
+	@Test
+	@Transactional(propagation = Propagation.NOT_SUPPORTED)
+	void translatesMysqlEligibilityConstraintViolationAtServiceFlush() {
+		DomainFixture fixture = createFixture();
+		FoodEligibilityEvaluation evaluation = createEligibleEvaluation(fixture);
+		TransactionTemplate transactionTemplate =
+				new TransactionTemplate(transactionManager);
+
+		try {
+			offerService.createOffer(
+					fixture.restaurant().getPublicId(),
+					offerRequest(evaluation));
+			Object serviceTarget = AopTestUtils.getTargetObject(offerService);
+
+			OfferAlreadyExistsException conflict = assertThrows(
+					OfferAlreadyExistsException.class,
+					() -> transactionTemplate.executeWithoutResult(status -> {
+						Offer existing = offerRepository
+								.findFirstByEligibilityEvaluationId(evaluation.getId())
+								.orElseThrow();
+						Offer duplicate = new Offer(
+								existing.getRestaurant(),
+								existing.getProduct(),
+								existing.getInventory(),
+								existing.getEligibilityEvaluation(),
+								existing.getOriginalPrice(),
+								existing.getDiscountPercentage(),
+								existing.getOfferPrice(),
+								existing.getCurrencyCode(),
+								existing.getOfferedQuantity(),
+								existing.getStartAt(),
+								existing.getExpiresAt());
+						duplicate.setStatus(OfferStatus.ACTIVE);
+
+						ReflectionTestUtils.invokeMethod(
+								serviceTarget,
+								"saveOffer",
+								duplicate);
+					}));
+
+			assertEquals(
+					"An Offer already exists for the selected eligibility evaluation",
+					conflict.getMessage());
+			long evaluationOfferCount = transactionTemplate.execute(status ->
+					offerRepository.findAll().stream()
+							.filter(offer -> offer.getEligibilityEvaluation().getId()
+									.equals(evaluation.getId()))
+							.count());
+			assertEquals(1L, evaluationOfferCount);
+		} finally {
+			cleanupCommittedFixture(
+					transactionTemplate,
+					fixture,
+					List.of(evaluation));
+		}
+	}
+
+	@Test
 	void rejectsInvalidExpirationWithBadRequest() throws Exception {
 		DomainFixture fixture = createFixture();
 		FoodEligibilityEvaluation evaluation = createEligibleEvaluation(fixture);
@@ -360,6 +639,16 @@ class OfferCreationIntegrationTests {
 				Instant.now().plusSeconds(7200));
 	}
 
+	private OfferCreateRequest offerRequest(
+			FoodEligibilityEvaluation evaluation) {
+		OfferCreateRequest request = new OfferCreateRequest();
+		request.setEligibilityEvaluationPublicId(evaluation.getPublicId());
+		request.setOfferedQuantity(OFFERED_QUANTITY);
+		request.setDiscountPercentage(DISCOUNT_PERCENTAGE);
+		request.setExpiresAt(Instant.now().plusSeconds(7200));
+		return request;
+	}
+
 	private ResultActions postOffer(
 			UUID restaurantPublicId,
 			UUID evaluationPublicId,
@@ -414,6 +703,120 @@ class OfferCreationIntegrationTests {
 				evaluatedInventoryVersion,
 				evaluatedAvailableQuantity,
 				Instant.now()));
+	}
+
+	private void await(CountDownLatch latch) {
+		try {
+			if (!latch.await(10, TimeUnit.SECONDS)) {
+				throw new IllegalStateException(
+						"Timed out while coordinating concurrent Offer creation");
+			}
+		} catch (InterruptedException exception) {
+			Thread.currentThread().interrupt();
+			throw new IllegalStateException(
+					"Interrupted while coordinating concurrent Offer creation",
+					exception);
+		}
+	}
+
+	private long currentMysqlConnectionId() {
+		Long connectionId = jdbcTemplate.queryForObject(
+				"select connection_id()",
+				Long.class);
+		if (connectionId == null) {
+			throw new IllegalStateException("MySQL connection ID was not available");
+		}
+		return connectionId;
+	}
+
+	private void awaitInventoryLockWait(long connectionId) {
+		long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+		while (System.nanoTime() < deadline) {
+			Long waitCount = jdbcTemplate.queryForObject(
+					INVENTORY_LOCK_WAIT_QUERY,
+					Long.class,
+					connectionId);
+			if (waitCount != null && waitCount > 0) {
+				return;
+			}
+			Thread.yield();
+		}
+		throw new AssertionError(
+				"Transaction did not enter a MySQL Inventory lock wait");
+	}
+
+	private void shutdownExecutor(
+			ExecutorService executor,
+			Throwable testFailure,
+			Future<?>... futures) {
+		for (Future<?> future : futures) {
+			if (future != null && !future.isDone()) {
+				future.cancel(true);
+			}
+		}
+		executor.shutdownNow();
+
+		try {
+			if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+				handleCleanupFailure(
+						testFailure,
+						new IllegalStateException(
+								"Concurrent Offer test executor did not terminate"));
+			}
+		} catch (InterruptedException exception) {
+			Thread.currentThread().interrupt();
+			handleCleanupFailure(
+					testFailure,
+					new IllegalStateException(
+							"Interrupted while stopping concurrent Offer test executor",
+							exception));
+		}
+	}
+
+	private void cleanupCommittedFixturePreservingFailure(
+			TransactionTemplate transactionTemplate,
+			DomainFixture fixture,
+			List<FoodEligibilityEvaluation> evaluations,
+			Throwable testFailure) {
+		try {
+			cleanupCommittedFixture(transactionTemplate, fixture, evaluations);
+		} catch (RuntimeException cleanupFailure) {
+			handleCleanupFailure(testFailure, cleanupFailure);
+		}
+	}
+
+	private void handleCleanupFailure(
+			Throwable testFailure,
+			RuntimeException cleanupFailure) {
+		if (testFailure != null) {
+			testFailure.addSuppressed(cleanupFailure);
+			return;
+		}
+		throw cleanupFailure;
+	}
+
+	private void cleanupCommittedFixture(
+			TransactionTemplate transactionTemplate,
+			DomainFixture fixture,
+			List<FoodEligibilityEvaluation> evaluations) {
+		transactionTemplate.executeWithoutResult(status -> {
+			List<Offer> offers = offerRepository.findAll().stream()
+					.filter(offer -> offer.getInventory().getId()
+							.equals(fixture.inventory().getId()))
+					.toList();
+			offerRepository.deleteAll(offers);
+			offerRepository.flush();
+			evaluationRepository.deleteAll(evaluations);
+			evaluationRepository.flush();
+			surplusDetectionRepository.deleteById(fixture.detection().getId());
+			surplusDetectionRepository.flush();
+			inventoryRepository.deleteById(fixture.inventory().getId());
+			inventoryRepository.flush();
+			productRepository.deleteById(fixture.product().getId());
+			productRepository.flush();
+			restaurantRepository.deleteById(fixture.restaurant().getId());
+			restaurantRepository.flush();
+		});
 	}
 
 	private DomainFixture createFixture() {

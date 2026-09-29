@@ -159,16 +159,16 @@ A: Offer relationships are lazy. Mapping inside the transaction ensures required
 ========================================================================
 
 Q: What happens if two requests create an Offer concurrently for the same Inventory?
-A: Both target the same Inventory lock. One proceeds first; the other waits, then rechecks duplicate/open Offer state and receives a conflict if the first Offer is still open.
+A: Both target the same Inventory lock. One proceeds first; the other waits, then uses current/locking reads to observe committed duplicate/open Offer state and receives a conflict if the first Offer is still open.
 
 Q: What race condition would occur without the Inventory lock?
 A: Both transactions could observe no open Offer, both pass checks, and both persist overlapping ACTIVE Offers for the same Inventory.
 
 Q: How do we prevent duplicate Offers?
-A: The service checks existsByEligibilityEvaluationId, the Inventory lock serializes same-Inventory creation, and a unique database constraint on eligibility_evaluation_id is the final safeguard.
+A: The service performs a post-lock current read for the evaluation, the Inventory lock serializes same-Inventory creation, and a unique database constraint on eligibility_evaluation_id is the final safeguard. A violation of that specific constraint is translated to the same 409 conflict; unrelated integrity failures are not.
 
 Q: How do we prevent overlapping active Offers?
-A: While holding the Inventory lock, the service checks for an Offer with the same Inventory, status ACTIVE, and expiresAt after the transaction time.
+A: While holding the Inventory lock, the service uses a current/locking read for an Offer with the same Inventory, status ACTIVE, and expiresAt after the transaction time.
 
 Q: What happens if the same request is submitted twice?
 A: The first may create an Offer. The second finds that the evaluation is already used and returns HTTP 409.
@@ -317,7 +317,7 @@ A: It makes the ownership scope explicit and prevents the body from independentl
 ========================================================================
 
 Q: What does the current full test suite report?
-A: 82 tests, 0 failures, 0 errors, 0 skipped, and BUILD SUCCESS.
+A: 89 tests, 0 failures, 0 errors, 0 skipped, and BUILD SUCCESS.
 
 Q: What does OfferCreationIntegrationTests exercise?
 A: The real Spring MVC, service, transaction, JPA, and MySQL flow, including persistence, conflicts, ownership hiding, mutation checks, and lock annotation verification.
