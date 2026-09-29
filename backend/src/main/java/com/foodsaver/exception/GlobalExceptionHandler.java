@@ -139,6 +139,48 @@ public class GlobalExceptionHandler {
 		return ResponseEntity.status(HttpStatus.CONFLICT).body(response);
 	}
 
+	@ExceptionHandler(FoodEligibilityEvaluationNotFoundException.class)
+	public ResponseEntity<ErrorResponse> handleFoodEligibilityEvaluationNotFoundException(
+			FoodEligibilityEvaluationNotFoundException exception,
+			HttpServletRequest request) {
+		ErrorResponse response = new ErrorResponse(
+				Instant.now(),
+				HttpStatus.NOT_FOUND.value(),
+				exception.getMessage(),
+				request.getRequestURI(),
+				Map.of());
+
+		return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
+	}
+
+	@ExceptionHandler(OfferEligibilityException.class)
+	public ResponseEntity<ErrorResponse> handleOfferEligibilityException(
+			OfferEligibilityException exception,
+			HttpServletRequest request) {
+		ErrorResponse response = new ErrorResponse(
+				Instant.now(),
+				HttpStatus.CONFLICT.value(),
+				exception.getMessage(),
+				request.getRequestURI(),
+				Map.of());
+
+		return ResponseEntity.status(HttpStatus.CONFLICT).body(response);
+	}
+
+	@ExceptionHandler(OfferAlreadyExistsException.class)
+	public ResponseEntity<ErrorResponse> handleOfferAlreadyExistsException(
+			OfferAlreadyExistsException exception,
+			HttpServletRequest request) {
+		ErrorResponse response = new ErrorResponse(
+				Instant.now(),
+				HttpStatus.CONFLICT.value(),
+				exception.getMessage(),
+				request.getRequestURI(),
+				Map.of());
+
+		return ResponseEntity.status(HttpStatus.CONFLICT).body(response);
+	}
+
 	private void addError(
 			Map<String, List<String>> errors,
 			String key,
