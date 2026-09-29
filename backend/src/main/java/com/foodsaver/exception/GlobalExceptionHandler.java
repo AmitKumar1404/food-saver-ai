@@ -8,6 +8,7 @@ import java.util.Map;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.ObjectError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -65,6 +66,34 @@ public class GlobalExceptionHandler {
 				Map.of(
 						parameterName,
 						List.of("Must be a valid " + expectedType)));
+
+		return ResponseEntity.badRequest().body(response);
+	}
+
+	@ExceptionHandler(HttpMessageNotReadableException.class)
+	public ResponseEntity<ErrorResponse> handleHttpMessageNotReadable(
+			HttpMessageNotReadableException exception,
+			HttpServletRequest request) {
+		ErrorResponse response = new ErrorResponse(
+				Instant.now(),
+				HttpStatus.BAD_REQUEST.value(),
+				"Malformed request body",
+				request.getRequestURI(),
+				Map.of());
+
+		return ResponseEntity.badRequest().body(response);
+	}
+
+	@ExceptionHandler(OfferValidationException.class)
+	public ResponseEntity<ErrorResponse> handleOfferValidationException(
+			OfferValidationException exception,
+			HttpServletRequest request) {
+		ErrorResponse response = new ErrorResponse(
+				Instant.now(),
+				HttpStatus.BAD_REQUEST.value(),
+				exception.getMessage(),
+				request.getRequestURI(),
+				Map.of());
 
 		return ResponseEntity.badRequest().body(response);
 	}
@@ -128,6 +157,48 @@ public class GlobalExceptionHandler {
 	@ExceptionHandler(InventoryAlreadyExistsException.class)
 	public ResponseEntity<ErrorResponse> handleInventoryAlreadyExistsException(
 			InventoryAlreadyExistsException exception,
+			HttpServletRequest request) {
+		ErrorResponse response = new ErrorResponse(
+				Instant.now(),
+				HttpStatus.CONFLICT.value(),
+				exception.getMessage(),
+				request.getRequestURI(),
+				Map.of());
+
+		return ResponseEntity.status(HttpStatus.CONFLICT).body(response);
+	}
+
+	@ExceptionHandler(FoodEligibilityEvaluationNotFoundException.class)
+	public ResponseEntity<ErrorResponse> handleFoodEligibilityEvaluationNotFoundException(
+			FoodEligibilityEvaluationNotFoundException exception,
+			HttpServletRequest request) {
+		ErrorResponse response = new ErrorResponse(
+				Instant.now(),
+				HttpStatus.NOT_FOUND.value(),
+				exception.getMessage(),
+				request.getRequestURI(),
+				Map.of());
+
+		return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
+	}
+
+	@ExceptionHandler(OfferEligibilityException.class)
+	public ResponseEntity<ErrorResponse> handleOfferEligibilityException(
+			OfferEligibilityException exception,
+			HttpServletRequest request) {
+		ErrorResponse response = new ErrorResponse(
+				Instant.now(),
+				HttpStatus.CONFLICT.value(),
+				exception.getMessage(),
+				request.getRequestURI(),
+				Map.of());
+
+		return ResponseEntity.status(HttpStatus.CONFLICT).body(response);
+	}
+
+	@ExceptionHandler(OfferAlreadyExistsException.class)
+	public ResponseEntity<ErrorResponse> handleOfferAlreadyExistsException(
+			OfferAlreadyExistsException exception,
 			HttpServletRequest request) {
 		ErrorResponse response = new ErrorResponse(
 				Instant.now(),
