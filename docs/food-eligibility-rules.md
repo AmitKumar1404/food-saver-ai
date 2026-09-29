@@ -144,6 +144,24 @@ authorized, auditable process.
 No `SAFE`, `UNSAFE`, `CERTIFIED`, or `APPROVED_FOR_SALE` status is introduced
 by this module.
 
+### Current immutable V1 implementation note
+
+`REQUIRES_REVIEW` remains a supported domain state and is preserved in the
+evaluator, persistence contract, response contract, and focused unit tests.
+The approved project-level `FOOD_ELIGIBILITY_V1` policy currently contains no
+authoritative rule or applicability condition that legitimately produces
+`REVIEW`. The current fact provider also requires a complete,
+ownership-consistent database fact chain, and invalid policy configuration
+fails application startup.
+
+Consequently, the current production V1 flow intentionally produces
+`ELIGIBLE_FOR_OFFER` or `NOT_ELIGIBLE`; it does not manufacture a
+`REQUIRES_REVIEW` result from missing resources or an invented food-safety
+condition. A production `REQUIRES_REVIEW` path requires a future approved
+policy contract that explicitly defines a review-producing applicability or
+rule condition. That condition must be authoritative, deterministic, and
+implemented without weakening ownership or fact validation.
+
 ## V1 Implementation Prerequisites
 
 Implementation must not begin until all of the following prerequisites are
@@ -362,10 +380,15 @@ Policy resolution should use:
 - `effectiveTo` exclusive when present.
 
 Exactly one applicable policy version should be selected during a normal
-evaluation. If no approved policy applies, the service creates an evaluation
-with `REQUIRES_REVIEW`. If multiple equally applicable published policies are
-found, the service must not choose one automatically and creates an evaluation
-with `REQUIRES_REVIEW`. Both outcomes block automatic Offer progression.
+evaluation. The domain contract requires a resolver that supports policy
+no-match or ambiguity to create `REQUIRES_REVIEW` without selecting a policy.
+Both outcomes block automatic Offer progression.
+
+The current immutable V1 resolver exposes exactly one validated project-level
+policy and has no no-match or ambiguity condition. It therefore cannot produce
+these runtime outcomes. They remain supported domain behavior for a future
+approved resolver contract and must not be simulated by weakening fact
+validation or inventing rule content.
 
 When one policy applies, the evaluation stores its policy key and immutable
 version so the decision remains reproducible after later policy changes. A
@@ -399,14 +422,19 @@ Restaurant data. More detailed jurisdiction support should be added only after
 its source, precedence, and boundary rules are defined.
 
 If no approved policy covers the context, the result cannot be
-`ELIGIBLE_FOR_OFFER`. V1 creates a `REQUIRES_REVIEW` evaluation and blocks
-automatic Offer progression.
+`ELIGIBLE_FOR_OFFER`. A resolver contract that supports this valid runtime
+condition must create a `REQUIRES_REVIEW` evaluation and block automatic Offer
+progression. The current fixed V1 resolver has no such applicability branch.
 
 ## 14. Missing or Conflicting Information
 
-Missing information must not be treated as a passing fact.
+Missing information must not be treated as a passing fact. Missing or
+ownership-inconsistent Restaurant, Inventory, Product, or Surplus Detection
+resources are rejected by the fact-provider boundary and do not create an
+evaluation.
 
-V1 behavior:
+Rule-domain behavior when a valid evaluation snapshot contains an
+authoritatively defined review condition:
 
 - A missing required authoritative fact produces `REQUIRES_REVIEW`, unless the
   applicable policy explicitly defines a deterministic blocking outcome.
@@ -418,6 +446,9 @@ V1 behavior:
 - Every `REQUIRES_REVIEW` outcome blocks automatic Offer progression.
 - Invalid ownership produces a not-found response rather than an eligibility
   result.
+
+The current immutable V1 policy defines no such review condition. These domain
+outcomes remain unit-testable, but are not forced into the production path.
 
 Invalid policy configuration is different from a valid runtime context that
 has no applicable policy. Invalid or overlapping policy configuration must
@@ -915,6 +946,9 @@ administrative authorization than ordinary Restaurant operations.
 ### Persistence and audit tests
 
 - Evaluation and rule results persist atomically.
+- A MySQL-backed integration test verifies the actual evaluation and
+  rule-result mappings, parent-child relationship, committed snapshot values,
+  and transaction rollback when rule-result persistence fails.
 - Public IDs and timestamps are generated.
 - Internal IDs and entities are not exposed.
 - Facts, the selected policy version or policy-resolution reason, outcomes,
@@ -942,9 +976,16 @@ administrative authorization than ordinary Restaurant operations.
 - Successful evaluation returns `201 Created`.
 - Completed non-eligible and review outcomes remain successful evaluations.
 - Validation errors use `400`.
+- Malformed UUID path parameters are handled centrally as `400 Bad Request`
+  using the existing `ErrorResponse` structure with a field-level error.
 - Ownership-aware missing resources use `404`.
 - Defined conflicts use `409`.
 - Responses use the existing `ErrorResponse` contract where applicable.
+
+### Interview preparation
+
+Implementation-specific interview questions and answers are maintained in
+`interview/food-eligibility-rules-interview-questions.txt`.
 
 ## 33. Explicitly Out of Scope for V1
 
@@ -1039,16 +1080,18 @@ Load typed facts with source references
 Resolve one applicable authoritative policy version
         |
         +---- no approved policy --------------> REQUIRES_REVIEW
+        |     (future approved applicability contract)
         |
         +---- equally applicable policies -----> REQUIRES_REVIEW
-        |                                         (select none automatically)
+        |     (future approved resolver; select none automatically)
         |
         v
 Run deterministic rules
         |
         +---- blocking rule -------------------> NOT_ELIGIBLE
         |
-        +---- missing/conflicting facts --------> REQUIRES_REVIEW
+        +---- approved review condition --------> REQUIRES_REVIEW
+        |     (supported domain state; none in current fixed V1 policy)
         |
         +---- all required rules pass ----------> ELIGIBLE_FOR_OFFER
         |

@@ -12,6 +12,7 @@ import org.springframework.validation.ObjectError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import jakarta.servlet.http.HttpServletRequest;
 
@@ -42,6 +43,28 @@ public class GlobalExceptionHandler {
 				"Validation failed",
 				request.getRequestURI(),
 				validationErrors);
+
+		return ResponseEntity.badRequest().body(response);
+	}
+
+	@ExceptionHandler(MethodArgumentTypeMismatchException.class)
+	public ResponseEntity<ErrorResponse> handleMethodArgumentTypeMismatch(
+			MethodArgumentTypeMismatchException exception,
+			HttpServletRequest request) {
+		String parameterName = exception.getName() != null
+				? exception.getName()
+				: GLOBAL_ERROR_KEY;
+		String expectedType = exception.getRequiredType() != null
+				? exception.getRequiredType().getSimpleName()
+				: "value";
+		ErrorResponse response = new ErrorResponse(
+				Instant.now(),
+				HttpStatus.BAD_REQUEST.value(),
+				"Invalid path parameter",
+				request.getRequestURI(),
+				Map.of(
+						parameterName,
+						List.of("Must be a valid " + expectedType)));
 
 		return ResponseEntity.badRequest().body(response);
 	}
@@ -77,6 +100,20 @@ public class GlobalExceptionHandler {
 	@ExceptionHandler(InventoryNotFoundException.class)
 	public ResponseEntity<ErrorResponse> handleInventoryNotFoundException(
 			InventoryNotFoundException exception,
+			HttpServletRequest request) {
+		ErrorResponse response = new ErrorResponse(
+				Instant.now(),
+				HttpStatus.NOT_FOUND.value(),
+				exception.getMessage(),
+				request.getRequestURI(),
+				Map.of());
+
+		return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
+	}
+
+	@ExceptionHandler(SurplusDetectionNotFoundException.class)
+	public ResponseEntity<ErrorResponse> handleSurplusDetectionNotFoundException(
+			SurplusDetectionNotFoundException exception,
 			HttpServletRequest request) {
 		ErrorResponse response = new ErrorResponse(
 				Instant.now(),
