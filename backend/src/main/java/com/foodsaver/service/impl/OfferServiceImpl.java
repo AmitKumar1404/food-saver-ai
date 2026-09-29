@@ -25,6 +25,7 @@ import com.foodsaver.enums.RestaurantStatus;
 import com.foodsaver.exception.FoodEligibilityEvaluationNotFoundException;
 import com.foodsaver.exception.OfferAlreadyExistsException;
 import com.foodsaver.exception.OfferEligibilityException;
+import com.foodsaver.exception.OfferValidationException;
 import com.foodsaver.exception.RestaurantNotFoundException;
 import com.foodsaver.repository.InventoryRepository;
 import com.foodsaver.repository.OfferRepository;
@@ -234,7 +235,7 @@ public class OfferServiceImpl implements OfferService {
 
 	private void validateExpiration(Instant expiresAt, Instant startAt) {
 		if (expiresAt == null || !expiresAt.isAfter(startAt)) {
-			throw new OfferEligibilityException(
+			throw new OfferValidationException(
 					"Offer expiry must be after its marketplace start time");
 		}
 	}

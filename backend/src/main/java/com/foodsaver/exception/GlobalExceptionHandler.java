@@ -69,6 +69,20 @@ public class GlobalExceptionHandler {
 		return ResponseEntity.badRequest().body(response);
 	}
 
+	@ExceptionHandler(OfferValidationException.class)
+	public ResponseEntity<ErrorResponse> handleOfferValidationException(
+			OfferValidationException exception,
+			HttpServletRequest request) {
+		ErrorResponse response = new ErrorResponse(
+				Instant.now(),
+				HttpStatus.BAD_REQUEST.value(),
+				exception.getMessage(),
+				request.getRequestURI(),
+				Map.of());
+
+		return ResponseEntity.badRequest().body(response);
+	}
+
 	@ExceptionHandler(RestaurantNotFoundException.class)
 	public ResponseEntity<ErrorResponse> handleRestaurantNotFoundException(
 			RestaurantNotFoundException exception,
