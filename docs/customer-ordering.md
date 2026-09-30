@@ -7,9 +7,11 @@ Customer Ordering V1.
 
 The completed Customer increments implement `CustomerStatus`, the `Customer`
 entity, `CustomerRepository`, `CustomerCreateRequest`, `CustomerResponse`, and
-focused persistence and DTO-validation tests. Reservation, Order, OrderItem,
-services, controllers, exceptions, migrations, schedulers, security rules,
-Kafka integration, Redis integration, and AI integration remain unimplemented.
+the transactional Customer creation service with focused persistence,
+DTO-validation, service, and duplicate-constraint translation tests.
+Reservation, Order, OrderItem, controllers, HTTP exception mappings,
+migrations, schedulers, security rules, Kafka integration, Redis integration,
+and AI integration remain unimplemented.
 
 The proposed flow extends the implemented FoodSaver domain:
 
@@ -1260,8 +1262,25 @@ The implemented `CustomerResponse` exposes:
 - `updatedAt`.
 
 It does not expose the internal database ID or optimistic-lock version.
-The `POST /api/v1/customers` controller and creation service remain future
-increments.
+
+The implemented `CustomerService.createCustomer` operation:
+
+1. canonicalizes the validated request email through
+   `Customer.canonicalizeEmail`, which applies `Locale.ROOT` lowercase only;
+2. uses `existsByEmail` for fast duplicate feedback;
+3. creates a server-controlled `ACTIVE` Customer;
+4. persists with `saveAndFlush` inside one `@Transactional` boundary; and
+5. maps only the approved `CustomerResponse` fields.
+
+The `uk_customers_email` unique constraint remains the final authority during
+concurrent creation. Only a Hibernate `ConstraintViolationException` naming
+that constraint is translated from `DataIntegrityViolationException` to
+`CustomerAlreadyExistsException`; unrelated integrity failures are propagated.
+The exception leaves the transactional method, so the failed transaction is
+rolled back rather than continued after a failed flush.
+
+The `POST /api/v1/customers` controller and HTTP `409` exception mapping remain
+future increments.
 
 ### 26.2 Reservation
 
@@ -1565,15 +1584,17 @@ Incremental steps:
 
 1. CustomerStatus and Customer persistence design implementation. (Completed)
 2. Customer request/response DTO and validation contract. (Completed)
-3. ReservationStatus, Reservation entity, constraints, and repositories.
-4. Reservation transactional allocation service and API.
-5. Reservation cancellation and expiry service.
-6. OrderStatus, Order, and OrderItem persistence.
-7. Order creation from Reservations.
-8. Order completion and cancellation.
-9. Global exception mappings and OpenAPI.
-10. Unit, controller, and real-MySQL integration tests.
-11. Continue Customer Ordering interview material for each increment.
+3. Customer transactional creation service and duplicate handling. (Completed)
+4. Customer controller, HTTP exception mapping, and OpenAPI.
+5. ReservationStatus, Reservation entity, constraints, and repositories.
+6. Reservation transactional allocation service and API.
+7. Reservation cancellation and expiry service.
+8. OrderStatus, Order, and OrderItem persistence.
+9. Order creation from Reservations.
+10. Order completion and cancellation.
+11. Remaining global exception mappings and OpenAPI.
+12. Unit, controller, and real-MySQL integration tests.
+13. Continue Customer Ordering interview material for each increment.
 
 No implementation step should combine all layers without review.
 
@@ -1608,9 +1629,18 @@ Implemented DTO-validation coverage verifies:
 - optional contact phone and its maximum length; and
 - response exclusion of internal ID and optimistic-lock version.
 
+Implemented service coverage verifies:
+
+- transactional Customer creation and approved response mapping;
+- `Locale.ROOT` lowercase email canonicalization;
+- default `ACTIVE` status, generated public UUID, and audit timestamps;
+- optional contact phone;
+- exact and mixed-case duplicate feedback through the application pre-check;
+- translation of only the named email unique constraint; and
+- propagation of unrelated database integrity failures.
+
 Future service and API coverage must verify:
 
-- successful Customer creation;
 - suspended and closed Customer behavior; and
 - validation errors use the centralized HTTP `400` `ErrorResponse` contract.
 

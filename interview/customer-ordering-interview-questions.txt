@@ -13,9 +13,12 @@ Current implementation:
 - CustomerCreateRequest with Bean Validation
 - CustomerResponse
 - Customer DTO validation tests
+- CustomerService and CustomerServiceImpl
+- CustomerAlreadyExistsException
+- Customer service integration and persistence-translation tests
 
 Not yet implemented:
-- Customer API, services, or exception mappings
+- Customer API or HTTP exception mappings
 - Reservation, Order, or OrderItem persistence and workflows
 - Ordering transactions, expiry processing, or idempotency services
 - Kafka, Redis, AI, RAG, payment, authentication, or authorization
@@ -71,8 +74,8 @@ Q6. Why is email canonicalized in application code?
 Expected answer:
 The application converts email to lowercase with Locale.ROOT before
 persistence so uniqueness does not accidentally depend on a database
-collation. A future service must use the same canonical form before duplicate
-checks.
+collation. CustomerServiceImpl uses the same canonical form before duplicate
+checks and persistence.
 
 
 Q7. Does V1 trim or otherwise normalize email?
@@ -121,9 +124,9 @@ email?
 
 Expected answer:
 No. Concurrent transactions may both pass a pre-check. The named database
-unique constraint remains the final integrity defense. A future service/API
-must translate the specific duplicate conflict without hiding unrelated
-database failures.
+unique constraint remains the final integrity defense. CustomerServiceImpl
+translates only the named email constraint without hiding unrelated database
+failures. A future HTTP exception mapping will expose the controlled conflict.
 
 
 Q13. Why is contact_phone nullable and not unique?
@@ -162,8 +165,8 @@ Does this replace request validation?
 
 Follow-up answer:
 No. CustomerCreateRequest validates required fields, email syntax, and field
-lengths. A future service must still canonicalize the valid email before
-duplicate checks and persistence.
+lengths. CustomerServiceImpl canonicalizes the valid email before duplicate
+checks and persistence.
 
 
 Q17. Scenario: a client sends an internal Customer ID or version. Should the
@@ -197,12 +200,12 @@ No. A UUID is a public identifier, not a credential. Authentication and
 authorization remain a future concern.
 
 
-Q20. Why does Customer have DTOs but no endpoint yet?
+Q20. Why does Customer have a service and DTOs but no endpoint yet?
 
 Expected answer:
-The project is implemented incrementally. The persistence model and DTO
-contract are complete, while the service transaction and HTTP controller
-require separate reviewed steps.
+The project is implemented incrementally. The persistence model, DTO contract,
+and transactional creation service are complete, while the HTTP controller
+and exception mapping require a separate reviewed step.
 
 
 Q21. Is the configured Reservation TTL part of the Customer entity?
@@ -225,9 +228,9 @@ Q23. Why does the Customer DTO not lowercase email?
 
 Expected answer:
 Validation and canonicalization are separate responsibilities. The DTO
-validates the submitted API value without mutating it. The future service and
-Customer domain canonicalization apply Locale.ROOT lowercase before duplicate
-checks and persistence.
+validates the submitted API value without mutating it. CustomerServiceImpl and
+the Customer domain apply Locale.ROOT lowercase before duplicate checks and
+persistence.
 
 
 Q24. Which fields does CustomerResponse intentionally exclude?
@@ -244,3 +247,40 @@ Expected answer:
 The Customer V1 contract defines only optionality and a maximum length.
 Inventing a country-specific or universal phone-number rule would add an
 unapproved business constraint.
+
+
+Q26. What does CustomerServiceImpl do during Customer creation?
+
+Expected answer:
+Inside one transaction, it canonicalizes the validated email, performs a fast
+duplicate check, creates an ACTIVE Customer with only client-controlled
+profile fields, flushes persistence, and maps the approved response fields.
+The entity lifecycle generates the public UUID and audit timestamps, while JPA
+manages the version.
+
+
+Q27. Why are both existsByEmail and uk_customers_email required?
+
+Expected answer:
+The repository existence check provides fast feedback during ordinary
+requests, but concurrent transactions can both pass it. The database unique
+constraint remains the final authority and prevents duplicate canonical email
+rows.
+
+
+Q28. Why does Customer creation use saveAndFlush?
+
+Expected answer:
+It forces a unique-constraint failure to occur inside the transactional
+service method, where the named email constraint can be translated to
+CustomerAlreadyExistsException. Unrelated DataIntegrityViolationException
+instances are rethrown.
+
+
+Q29. What happens to the transaction after a concurrent email constraint
+violation?
+
+Expected answer:
+CustomerAlreadyExistsException leaves the transactional service method. The
+transaction interceptor rolls the transaction back; the service does not catch
+the failure and continue using a transaction marked rollback-only.
