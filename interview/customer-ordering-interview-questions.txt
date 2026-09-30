@@ -1,0 +1,206 @@
+============================================================
+FOODSAVER AI - CUSTOMER ORDERING INTERVIEW QUESTIONS
+============================================================
+
+Module:
+Customer Ordering
+
+Current implementation:
+- CustomerStatus
+- Customer entity
+- CustomerRepository
+- Customer persistence integration tests
+
+Not yet implemented:
+- Customer API, DTOs, services, or exception mappings
+- Reservation, Order, or OrderItem persistence and workflows
+- Ordering transactions, expiry processing, or idempotency services
+- Kafka, Redis, AI, RAG, payment, authentication, or authorization
+
+
+============================================================
+1. BEGINNER - CUSTOMER DOMAIN
+============================================================
+
+Q1. What does Customer represent in FoodSaver?
+
+Expected answer:
+Customer is the minimal profile aggregate that will own future Reservations
+and Orders. It is deliberately separate from authentication credentials,
+payment data, and AI profiles.
+
+
+Q2. Which Customer lifecycle states exist?
+
+Expected answer:
+ACTIVE, SUSPENDED, and CLOSED. They are persisted as strings so database
+values remain readable and enum declaration order does not affect stored data.
+
+
+Q3. Why does Customer use both an internal ID and a public UUID?
+
+Expected answer:
+The BIGINT identity is efficient for database primary keys and future foreign
+keys. The UUID is the stable public identifier intended for API boundaries.
+Internal IDs and JPA versions must not be exposed publicly.
+
+
+Q4. Which Customer fields are intentionally absent?
+
+Expected answer:
+Passwords, roles, JWT data, payment fields, and AI profile fields are absent.
+Those concerns do not belong in this persistence increment.
+
+
+============================================================
+2. INTERMEDIATE - JPA AND DATABASE DESIGN
+============================================================
+
+Q5. Which constraints protect Customer identity?
+
+Expected answer:
+uk_customers_public_id uniquely protects public_id, and uk_customers_email
+uniquely protects the canonical email value.
+
+
+Q6. Why is email canonicalized in application code?
+
+Expected answer:
+The application converts email to lowercase with Locale.ROOT before
+persistence so uniqueness does not accidentally depend on a database
+collation. A future service must use the same canonical form before duplicate
+checks.
+
+
+Q7. Does V1 trim or otherwise normalize email?
+
+Expected answer:
+No. V1 performs lowercase conversion only. Trimming, provider-specific
+rewriting, and other normalization rules were not invented.
+
+
+Q8. Why do both the email setter and entity lifecycle callbacks canonicalize
+email?
+
+Expected answer:
+The setter gives immediate canonical state to normal callers. The callbacks
+provide a defensive persistence boundary before insert and update.
+
+
+Q9. What does @Version protect?
+
+Expected answer:
+It provides optimistic concurrency control for future Customer profile and
+lifecycle updates. A stale update will fail instead of silently overwriting a
+newer committed version.
+
+
+Q10. Why are audit columns TIMESTAMP(6)?
+
+Expected answer:
+Microsecond precision matches the module design and preserves useful ordering
+and audit detail without relying on database-default timestamp precision.
+
+
+Q11. Which Customer query index is implemented?
+
+Expected answer:
+idx_customers_status_created on status and created_at supports lifecycle-based
+processing or administrative listing ordered or filtered by creation time.
+
+
+============================================================
+3. ADVANCED AND PRODUCTION SCENARIOS
+============================================================
+
+Q12. Is an application-level duplicate check enough to guarantee unique
+email?
+
+Expected answer:
+No. Concurrent transactions may both pass a pre-check. The named database
+unique constraint remains the final integrity defense. A future service/API
+must translate the specific duplicate conflict without hiding unrelated
+database failures.
+
+
+Q13. Why is contact_phone nullable and not unique?
+
+Expected answer:
+Phone verification and phone-based identity are not part of V1. Making the
+column optional avoids inventing unsupported identity or verification
+semantics.
+
+
+Q14. Why are there no Customer relationships yet?
+
+Expected answer:
+Reservation and Order are intentionally deferred. Adding placeholder
+relationships now would expand this incremental step and risk premature
+cascade or deletion behavior.
+
+
+Q15. Should future ordering history cascade-delete when a Customer closes?
+
+Expected answer:
+No. Customer lifecycle changes must not erase future Reservation or Order
+history. CLOSED is a lifecycle state, not a request for cascading historical
+deletion.
+
+
+Q16. Scenario: two requests submit the same email with different letter case.
+What must happen?
+
+Expected answer:
+Both values canonicalize to the same lowercase value. At most one row can
+persist because uk_customers_email protects the canonical column.
+
+Possible follow-up:
+Does this replace request validation?
+
+Follow-up answer:
+No. A future request DTO and service must still validate required fields and
+email syntax before persistence.
+
+
+Q17. Scenario: a client sends an internal Customer ID or version. Should the
+server accept it?
+
+Expected answer:
+No. Future API DTOs must expose the public UUID and server-controlled profile
+fields only. Internal IDs and versions are persistence details.
+
+
+Q18. Can AI decide whether a Customer may order food that deterministic
+eligibility rules rejected?
+
+Expected answer:
+No. AI is advisory only. Customer Ordering must consume the existing Offer and
+deterministic eligibility result and cannot override food-safety or allocation
+checks.
+
+
+============================================================
+4. TRICKY AND FOLLOW-UP QUESTIONS
+============================================================
+
+Q19. Does a UUID provide authentication or authorization?
+
+Expected answer:
+No. A UUID is a public identifier, not a credential. Authentication and
+authorization remain a future concern.
+
+
+Q20. Why are Customer DTOs and endpoints absent even though the entity exists?
+
+Expected answer:
+The project is implemented incrementally. This step establishes and verifies
+the persistence model only; API contracts and business behavior require a
+separate reviewed step.
+
+
+Q21. Is the configured Reservation TTL part of the Customer entity?
+
+Expected answer:
+No. The approved design uses one future global
+foodsaver.ordering.reservation-ttl property. It belongs to Reservation
+behavior and is not implemented in the Customer persistence step.
