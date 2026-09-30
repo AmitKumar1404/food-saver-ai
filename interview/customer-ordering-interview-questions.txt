@@ -21,10 +21,14 @@ Current implementation:
 - CustomerAlreadyExistsException HTTP 409 mapping
 - CustomerNotFoundException HTTP 404 mapping
 - Customer create/get OpenAPI contracts and controller tests
+- ReservationStatus
+- Reservation entity and ReservationRepository
+- Reservation real-MySQL persistence tests
 
 Not yet implemented:
 - Customer update, delete, list, or search APIs
-- Reservation, Order, or OrderItem persistence and workflows
+- Reservation services, APIs, allocation, and lifecycle workflows
+- Order or OrderItem persistence and workflows
 - Ordering transactions, expiry processing, or idempotency services
 - Kafka, Redis, AI, RAG, payment, authentication, or authorization
 
@@ -373,3 +377,86 @@ Q40. What does the Customer GET OpenAPI operation document?
 Expected answer:
 It documents CustomerResponse for HTTP 200 and ErrorResponse for HTTP 400
 invalid UUID and HTTP 404 missing Customer responses.
+
+
+============================================================
+5. RESERVATION PERSISTENCE
+============================================================
+
+Q41. What does Reservation represent in the persistence model?
+
+Expected answer:
+Reservation is a durable, customer-owned record for a future temporary hold
+against one Offer and Inventory record. This increment persists the model but
+does not allocate quantity or implement Reservation APIs.
+
+
+Q42. Which Reservation statuses are implemented?
+
+Expected answer:
+ACTIVE, CONVERTED, CANCELLED, and EXPIRED. They are marketplace and ordering
+lifecycle states, not food-safety states or certifications.
+
+
+Q43. Which upstream entities does Reservation reference?
+
+Expected answer:
+It has required lazy, unidirectional references to Customer, Restaurant,
+Offer, and Inventory. No parent collections or cascade deletion are added, so
+Reservation history cannot cascade-delete upstream records.
+
+
+Q44. Which Reservation fields are immutable after insert?
+
+Expected answer:
+The upstream references, quantity, price and currency snapshots,
+idempotencyKey, requestHash, expiresAt, publicId, and createdAt are
+non-updatable. Future services may change status and lifecycle timestamps.
+
+
+Q45. Which database constraints protect Reservation persistence?
+
+Expected answer:
+The table has unique constraints on publicId and on customer plus
+idempotencyKey. A named check constraint requires positive quantity,
+unitPrice, and totalAmount and requires expiresAt to be after createdAt.
+
+
+Q46. Why is the idempotency key unique only within one Customer?
+
+Expected answer:
+The same external key may legitimately be used by different Customers. The
+customer-scoped unique constraint prevents duplicate creation for one
+Customer while avoiding a global key namespace.
+
+
+Q47. Why are unitPrice, totalAmount, and currencyCode stored on Reservation?
+
+Expected answer:
+They are immutable Offer pricing snapshots. Future Product or Offer changes
+must not rewrite the historical values associated with a hold.
+
+
+Q48. Why does the database not enforce totalAmount equals quantity multiplied
+by unitPrice?
+
+Expected answer:
+The future service will own scale-aware multiplication and explicit rounding.
+A database multiplication equality check could apply different decimal
+rounding semantics and create two competing authorities.
+
+
+Q49. What does @Version provide on Reservation?
+
+Expected answer:
+It provides optimistic locking for future lifecycle transitions. The
+transactional service and pessimistic aggregate locks will still be required
+for allocation and overselling prevention.
+
+
+Q50. Does persisting a Reservation entity reserve Inventory?
+
+Expected answer:
+No. This increment implements persistence only. A future transactional
+Reservation service must lock authoritative rows, validate state, and
+atomically move Inventory quantity from available to reserved.

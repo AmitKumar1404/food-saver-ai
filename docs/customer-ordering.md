@@ -10,10 +10,12 @@ entity, `CustomerRepository`, `CustomerCreateRequest`, `CustomerResponse`, and
 the transactional Customer creation service with focused persistence,
 DTO-validation, service, controller, and duplicate-constraint translation
 tests. `POST /api/v1/customers`, its OpenAPI contract, and the Customer
-duplicate HTTP mapping are implemented. Reservation, Order, OrderItem,
-remaining controllers and HTTP mappings, migrations, schedulers, security
-rules, Kafka integration, Redis integration, and AI integration remain
-unimplemented.
+duplicate HTTP mapping are implemented. Order, OrderItem, remaining controllers
+and HTTP mappings, migrations, schedulers, security rules, Kafka integration,
+Redis integration, and AI integration remain unimplemented. Reservation
+persistence now includes `ReservationStatus`, the `Reservation` entity,
+`ReservationRepository`, and focused real-MySQL persistence tests; Reservation
+services and APIs remain unimplemented.
 
 The proposed flow extends the implemented FoodSaver domain:
 
@@ -357,13 +359,13 @@ method, or AI-profile column is introduced in this design.
 
 ## 10. Reservation Database Design
 
-Proposed table:
+Implemented table:
 
 ```text
 reservations
 ```
 
-Proposed columns:
+Implemented columns:
 
 - `id BIGINT NOT NULL AUTO_INCREMENT`: internal primary key.
 - `public_id CHAR(36) NOT NULL`: immutable public UUID.
@@ -386,7 +388,7 @@ Proposed columns:
 - `expired_at TIMESTAMP(6) NULL`.
 - `converted_at TIMESTAMP(6) NULL`.
 
-Proposed constraints:
+Implemented constraints:
 
 - Primary key on `id`.
 - `uk_reservations_public_id` on `public_id`.
@@ -402,7 +404,7 @@ that `totalAmount` equals rounded `unitPrice * quantity`. A database equality
 check is not proposed because decimal multiplication and application rounding
 must have one explicit authority.
 
-Proposed indexes:
+Implemented indexes:
 
 - `idx_reservations_customer_status_created` on
   `(customer_id, status, created_at)`.
@@ -417,6 +419,14 @@ Proposed indexes:
 Foreign keys use restrictive deletion. Customer, Restaurant, Offer, and
 Inventory records referenced by Reservation history must not be cascade
 deleted.
+
+The entity uses required lazy, unidirectional relationships and does not add
+parent collections or upstream cascades. Reference, allocation snapshot,
+idempotency, hash, expiry, and creation fields are immutable after insert.
+Status and cancellation, expiry, and conversion timestamps remain available
+for future service-controlled lifecycle transitions. This persistence
+increment does not allocate Inventory, create a hold through an API, expire a
+Reservation, cancel a Reservation, or convert one to an Order.
 
 ## 11. Order Database Design
 
@@ -541,6 +551,8 @@ expiry, cancellation, rollback, or historical reads needed to reconcile
 existing allocations.
 
 ### 13.2 ReservationStatus
+
+`ReservationStatus` is implemented as a string-persisted enum.
 
 ```text
 ACTIVE
@@ -1622,6 +1634,7 @@ Incremental steps:
 3. Customer transactional creation service and duplicate handling. (Completed)
 4. Customer controller, HTTP exception mapping, and OpenAPI. (Completed)
 5. ReservationStatus, Reservation entity, constraints, and repositories.
+   (Completed)
 6. Reservation transactional allocation service and API.
 7. Reservation cancellation and expiry service.
 8. OrderStatus, Order, and OrderItem persistence.
@@ -1645,6 +1658,17 @@ No implementation step should combine all layers without review.
 - Audit timestamps.
 - Optimistic versions.
 - Immutable OrderItem snapshots.
+
+Implemented Reservation persistence coverage verifies:
+
+- generated and database-unique public UUIDs;
+- string status persistence and required upstream references;
+- quantity and monetary precision;
+- currency, idempotency key, and request hash persistence;
+- optimistic version and audit timestamp initialization;
+- customer-scoped idempotency uniqueness; and
+- database rejection of non-positive quantity, unit price, or total amount
+  and invalid expiry ordering.
 
 ### 36.2 Customer tests
 
