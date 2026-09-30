@@ -59,6 +59,7 @@ import com.foodsaver.repository.ReservationRepository;
 import com.foodsaver.repository.RestaurantRepository;
 import com.foodsaver.repository.projection.OfferAllocationTarget;
 import com.foodsaver.repository.projection.ReservationAllocationTarget;
+import com.foodsaver.service.ReservationLedgerService;
 
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -89,6 +90,8 @@ class ReservationAllocationCommandTests {
 	@Mock
 	private ReservationRepository reservationRepository;
 	@Mock
+	private ReservationLedgerService reservationLedgerService;
+	@Mock
 	private ReservationAllocationTransactionObserver transactionObserver;
 
 	private ReservationAllocationCommand command;
@@ -111,6 +114,7 @@ class ReservationAllocationCommandTests {
 				inventoryRepository,
 				offerRepository,
 				reservationRepository,
+				reservationLedgerService,
 				properties,
 				new ReservationResponseMapper(),
 				transactionObserver));
@@ -143,9 +147,7 @@ class ReservationAllocationCommandTests {
 				.thenReturn(List.of());
 		when(offerRepository.findAllByIdInOrderByIdForAllocation(List.of(50L)))
 				.thenReturn(List.of(offer));
-		when(reservationRepository.sumQuantityByInventoryIdAndStatusIn(
-				eq(30L),
-				eq(ALLOCATED)))
+		when(reservationLedgerService.outstandingQuantity(30L))
 				.thenReturn(ZERO, ZERO, new BigDecimal("2.000"));
 		when(reservationRepository.sumQuantityByOfferIdAndStatusIn(
 				eq(50L),
@@ -187,9 +189,7 @@ class ReservationAllocationCommandTests {
 
 	@Test
 	void failsClosedWhenReservationLedgerDoesNotMatchInventory() {
-		when(reservationRepository.sumQuantityByInventoryIdAndStatusIn(
-				eq(30L),
-				eq(ALLOCATED)))
+		when(reservationLedgerService.outstandingQuantity(30L))
 				.thenReturn(new BigDecimal("1.000"));
 
 		assertThrows(
@@ -233,9 +233,7 @@ class ReservationAllocationCommandTests {
 		when(reservationRepository.findAllByIdInOrderByIdForAllocation(
 				List.of(60L)))
 				.thenReturn(List.of(expired));
-		when(reservationRepository.sumQuantityByInventoryIdAndStatusIn(
-				eq(30L),
-				eq(ALLOCATED)))
+		when(reservationLedgerService.outstandingQuantity(30L))
 				.thenReturn(
 						new BigDecimal("2.000"),
 						ZERO,
@@ -279,9 +277,7 @@ class ReservationAllocationCommandTests {
 		when(reservationRepository.findAllByIdInOrderByIdForAllocation(
 				List.of(61L, 62L)))
 				.thenReturn(List.of(first, second));
-		when(reservationRepository.sumQuantityByInventoryIdAndStatusIn(
-				eq(30L),
-				eq(ALLOCATED)))
+		when(reservationLedgerService.outstandingQuantity(30L))
 				.thenReturn(
 						new BigDecimal("2.000"),
 						new BigDecimal("2.000"),
@@ -344,9 +340,7 @@ class ReservationAllocationCommandTests {
 		when(reservationRepository.findAllByIdInOrderByIdForAllocation(
 				List.of(70L)))
 				.thenReturn(List.of(existing));
-		when(reservationRepository.sumQuantityByInventoryIdAndStatusIn(
-				eq(30L),
-				eq(ALLOCATED)))
+		when(reservationLedgerService.outstandingQuantity(30L))
 				.thenReturn(new BigDecimal("1.000"), new BigDecimal("1.000"));
 
 		ReservationResponse response = command.allocate(request("1.000"));
@@ -381,9 +375,7 @@ class ReservationAllocationCommandTests {
 		when(reservationRepository.findAllByIdInOrderByIdForAllocation(
 				List.of(70L)))
 				.thenReturn(List.of(existing));
-		when(reservationRepository.sumQuantityByInventoryIdAndStatusIn(
-				eq(30L),
-				eq(ALLOCATED)))
+		when(reservationLedgerService.outstandingQuantity(30L))
 				.thenReturn(new BigDecimal("1.000"), ZERO);
 
 		ReservationResponse response = command.allocate(request("1.000"));

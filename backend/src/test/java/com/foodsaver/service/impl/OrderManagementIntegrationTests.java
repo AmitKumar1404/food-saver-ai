@@ -43,6 +43,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
+import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
@@ -77,8 +78,11 @@ import com.foodsaver.enums.ProductStatus;
 import com.foodsaver.enums.ReservationStatus;
 import com.foodsaver.enums.RestaurantStatus;
 import com.foodsaver.enums.SurplusDetectionStatus;
+import com.foodsaver.exception.CustomerNotFoundException;
+import com.foodsaver.exception.OrderCompletionConflictException;
 import com.foodsaver.exception.OrderConversionConflictException;
 import com.foodsaver.exception.OrderIdempotencyConflictException;
+import com.foodsaver.exception.OrderNotFoundException;
 import com.foodsaver.exception.ReservationNotFoundException;
 import com.foodsaver.repository.CustomerRepository;
 import com.foodsaver.repository.FoodEligibilityEvaluationRepository;
@@ -147,6 +151,8 @@ class OrderManagementIntegrationTests {
 	@Autowired
 	private TestOrderObserver observer;
 	@Autowired
+	private TestCompletionObserver completionObserver;
+	@Autowired
 	private TestOrderSqlStatementInspector sqlStatementInspector;
 	@Autowired
 	private PlatformTransactionManager transactionManager;
@@ -159,6 +165,7 @@ class OrderManagementIntegrationTests {
 	@AfterEach
 	void cleanData() {
 		observer.reset();
+		completionObserver.reset();
 		sqlStatementInspector.clear();
 		for (Fixture fixture : fixtures.reversed()) {
 			List<com.foodsaver.entity.Order> orders = fixture.customers().stream()
@@ -263,6 +270,570 @@ class OrderManagementIntegrationTests {
 	}
 
 	@Test
+	void completesOrderOnceAndMovesReservedQuantityToSold() {
+		Fixture fixture = createFixture(2);
+		Reservation reservation = reserve(
+				fixture,
+				fixture.customers().getFirst(),
+				"reserve-complete-" + UUID.randomUUID());
+		OrderResponse confirmed = convert(
+				fixture,
+				fixture.customers().getFirst(),
+				reservation,
+				"order-complete-" + UUID.randomUUID());
+		Inventory before = inventoryRepository
+				.findById(fixture.inventory().getId())
+				.orElseThrow();
+
+		OrderResponse completed = orderService.completeOrder(
+				fixture.customers().getFirst().getPublicId(),
+				confirmed.getPublicId());
+		OrderResponse replay = orderService.completeOrder(
+				fixture.customers().getFirst().getPublicId(),
+				confirmed.getPublicId());
+		Inventory after = inventoryRepository
+				.findById(fixture.inventory().getId())
+				.orElseThrow();
+		Reservation persistedReservation = reservationRepository
+				.findById(reservation.getId())
+				.orElseThrow();
+
+		assertEquals(OrderStatus.COMPLETED, completed.getStatus());
+		assertEquals(completed.getPublicId(), replay.getPublicId());
+		assertEquals(completed.getCompletedAt(), replay.getCompletedAt());
+		assertEquals(completed.getCompletedAt(), completed.getUpdatedAt());
+		assertEquals(0, completed.getCompletedAt().getNano() % 1_000);
+		assertEquals(before.getPreparedQuantity(), after.getPreparedQuantity());
+		assertEquals(before.getAvailableQuantity(), after.getAvailableQuantity());
+		assertEquals(
+				before.getReservedQuantity().subtract(reservation.getQuantity()),
+				after.getReservedQuantity());
+		assertEquals(
+				before.getSoldQuantity().add(reservation.getQuantity()),
+				after.getSoldQuantity());
+		assertEquals(before.getStatus(), after.getStatus());
+		assertEquals(
+				ReservationStatus.CONVERTED,
+				persistedReservation.getStatus());
+
+		entityManager.clear();
+		OrderResponse reloaded = orderService.getOrder(
+				fixture.customers().getFirst().getPublicId(),
+				completed.getPublicId());
+		assertEquals(completed.getCompletedAt(), reloaded.getCompletedAt());
+		assertEquals(completed.getUpdatedAt(), reloaded.getUpdatedAt());
+		assertEquals(
+				6,
+				jdbcTemplate.queryForObject(
+						"""
+						select datetime_precision
+						from information_schema.columns
+						where table_schema = database()
+						  and table_name = 'customer_orders'
+						  and column_name = 'completed_at'
+						""",
+						Integer.class));
+
+		Reservation allocationAfterCompletion = reserve(
+				fixture,
+				fixture.customers().get(1),
+				"reserve-after-completion-" + UUID.randomUUID());
+		assertEquals(
+				ReservationStatus.ACTIVE,
+				allocationAfterCompletion.getStatus());
+		assertEquals(
+				OrderStatus.CONFIRMED,
+				convert(
+						fixture,
+						fixture.customers().get(1),
+						allocationAfterCompletion,
+						"order-after-completion-" + UUID.randomUUID())
+						.getStatus());
+	}
+
+	@Test
+	void concurrentCompletionOfSameOrderMovesInventoryOnce() throws Exception {
+		Fixture fixture = createFixture(1);
+		Reservation reservation = reserve(
+				fixture,
+				fixture.customers().getFirst(),
+				"reserve-complete-race-" + UUID.randomUUID());
+		OrderResponse confirmed = convert(
+				fixture,
+				fixture.customers().getFirst(),
+				reservation,
+				"order-complete-race-" + UUID.randomUUID());
+		Inventory before = inventoryRepository
+				.findById(fixture.inventory().getId())
+				.orElseThrow();
+		CyclicBarrier start = new CyclicBarrier(2);
+
+		try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+			Future<OrderResponse> first = executor.submit(() -> {
+				start.await();
+				return orderService.completeOrder(
+						fixture.customers().getFirst().getPublicId(),
+						confirmed.getPublicId());
+			});
+			Future<OrderResponse> second = executor.submit(() -> {
+				start.await();
+				return orderService.completeOrder(
+						fixture.customers().getFirst().getPublicId(),
+						confirmed.getPublicId());
+			});
+			assertEquals(
+					first.get(10, TimeUnit.SECONDS).getCompletedAt(),
+					second.get(10, TimeUnit.SECONDS).getCompletedAt());
+		}
+
+		Inventory after = inventoryRepository
+				.findById(fixture.inventory().getId())
+				.orElseThrow();
+		assertEquals(
+				before.getReservedQuantity().subtract(reservation.getQuantity()),
+				after.getReservedQuantity());
+		assertEquals(
+				before.getSoldQuantity().add(reservation.getQuantity()),
+				after.getSoldQuantity());
+	}
+
+	@Test
+	void completionRejectsScopeLifecycleRelationshipAndLedgerConflicts() {
+		Fixture scopeFixture = createFixture(2);
+		Reservation scopeReservation = reserve(
+				scopeFixture,
+				scopeFixture.customers().getFirst(),
+				"reserve-complete-scope-" + UUID.randomUUID());
+		OrderResponse scopedOrder = convert(
+				scopeFixture,
+				scopeFixture.customers().getFirst(),
+				scopeReservation,
+				"order-complete-scope-" + UUID.randomUUID());
+		assertThrows(
+				CustomerNotFoundException.class,
+				() -> orderService.completeOrder(
+						UUID.randomUUID(),
+						scopedOrder.getPublicId()));
+		assertThrows(
+				OrderNotFoundException.class,
+				() -> orderService.completeOrder(
+						scopeFixture.customers().getFirst().getPublicId(),
+						UUID.randomUUID()));
+		assertThrows(
+				OrderNotFoundException.class,
+				() -> orderService.completeOrder(
+						scopeFixture.customers().get(1).getPublicId(),
+						scopedOrder.getPublicId()));
+
+		Fixture lifecycleFixture = createFixture(1);
+		Reservation lifecycleReservation = reserve(
+				lifecycleFixture,
+				lifecycleFixture.customers().getFirst(),
+				"reserve-complete-lifecycle-" + UUID.randomUUID());
+		OrderResponse lifecycleOrder = convert(
+				lifecycleFixture,
+				lifecycleFixture.customers().getFirst(),
+				lifecycleReservation,
+				"order-complete-lifecycle-" + UUID.randomUUID());
+		lifecycleReservation = reservationRepository
+				.findById(lifecycleReservation.getId())
+				.orElseThrow();
+		lifecycleReservation.setStatus(ReservationStatus.ACTIVE);
+		reservationRepository.saveAndFlush(lifecycleReservation);
+		assertThrows(
+				OrderCompletionConflictException.class,
+				() -> orderService.completeOrder(
+						lifecycleFixture.customers().getFirst().getPublicId(),
+						lifecycleOrder.getPublicId()));
+
+		Fixture ledgerFixture = createFixture(1);
+		Reservation ledgerReservation = reserve(
+				ledgerFixture,
+				ledgerFixture.customers().getFirst(),
+				"reserve-complete-ledger-" + UUID.randomUUID());
+		OrderResponse ledgerOrder = convert(
+				ledgerFixture,
+				ledgerFixture.customers().getFirst(),
+				ledgerReservation,
+				"order-complete-ledger-" + UUID.randomUUID());
+		Inventory corruptInventory = inventoryRepository
+				.findById(ledgerFixture.inventory().getId())
+				.orElseThrow();
+		corruptInventory.setAvailableQuantity(
+				corruptInventory.getAvailableQuantity().subtract(BigDecimal.ONE));
+		corruptInventory.setReservedQuantity(
+				corruptInventory.getReservedQuantity().add(BigDecimal.ONE));
+		inventoryRepository.saveAndFlush(corruptInventory);
+		assertThrows(
+				OrderCompletionConflictException.class,
+				() -> orderService.completeOrder(
+						ledgerFixture.customers().getFirst().getPublicId(),
+						ledgerOrder.getPublicId()));
+
+		Fixture unrelatedFixture = createFixture(1);
+		Fixture relationshipFixture = createFixture(1);
+		Reservation relationshipReservation = reserve(
+				relationshipFixture,
+				relationshipFixture.customers().getFirst(),
+				"reserve-complete-relationship-" + UUID.randomUUID());
+		OrderResponse relationshipOrder = convert(
+				relationshipFixture,
+				relationshipFixture.customers().getFirst(),
+				relationshipReservation,
+				"order-complete-relationship-" + UUID.randomUUID());
+		Long relationshipOrderId = orderRepository
+				.findByPublicIdAndCustomerPublicId(
+						relationshipOrder.getPublicId(),
+						relationshipFixture.customers().getFirst().getPublicId())
+				.orElseThrow()
+				.getId();
+		jdbcTemplate.update(
+				"update order_items set inventory_id = ? where order_id = ?",
+				unrelatedFixture.inventory().getId(),
+				relationshipOrderId);
+		entityManager.clear();
+		assertThrows(
+				OrderCompletionConflictException.class,
+				() -> orderService.completeOrder(
+						relationshipFixture.customers().getFirst().getPublicId(),
+						relationshipOrder.getPublicId()));
+	}
+
+	@Test
+	void concurrentCompletionsWaitForSharedInventoryAndPreserveLedger()
+			throws Exception {
+		Fixture fixture = createFixture(2);
+		Reservation firstReservation = reserve(
+				fixture,
+				fixture.customers().getFirst(),
+				"reserve-shared-complete-a-" + UUID.randomUUID());
+		Reservation secondReservation = reserve(
+				fixture,
+				fixture.customers().get(1),
+				"reserve-shared-complete-b-" + UUID.randomUUID());
+		OrderResponse firstOrder = convert(
+				fixture,
+				fixture.customers().getFirst(),
+				firstReservation,
+				"order-shared-complete-a-" + UUID.randomUUID());
+		OrderResponse secondOrder = convert(
+				fixture,
+				fixture.customers().get(1),
+				secondReservation,
+				"order-shared-complete-b-" + UUID.randomUUID());
+		Inventory before = inventoryRepository
+				.findById(fixture.inventory().getId())
+				.orElseThrow();
+		TestCompletionObserver.TransactionBlock block =
+				completionObserver.blockAfterInventoryLock(
+						firstOrder.getPublicId());
+
+		try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+			Future<OrderResponse> first = executor.submit(() ->
+					orderService.completeOrder(
+							fixture.customers().getFirst().getPublicId(),
+							firstOrder.getPublicId()));
+			await(block.entered());
+			Future<OrderResponse> second = executor.submit(() ->
+					orderService.completeOrder(
+							fixture.customers().get(1).getPublicId(),
+							secondOrder.getPublicId()));
+			long waitingConnection = completionObserver.awaitConnection(
+					secondOrder.getPublicId());
+			awaitInventoryLockWait(waitingConnection);
+			block.release().countDown();
+			assertEquals(
+					OrderStatus.COMPLETED,
+					first.get(10, TimeUnit.SECONDS).getStatus());
+			assertEquals(
+					OrderStatus.COMPLETED,
+					second.get(10, TimeUnit.SECONDS).getStatus());
+		}
+
+		Inventory after = inventoryRepository
+				.findById(fixture.inventory().getId())
+				.orElseThrow();
+		BigDecimal completedQuantity = firstReservation.getQuantity()
+				.add(secondReservation.getQuantity());
+		assertEquals(
+				before.getReservedQuantity().subtract(completedQuantity),
+				after.getReservedQuantity());
+		assertEquals(
+				before.getSoldQuantity().add(completedQuantity),
+				after.getSoldQuantity());
+		assertTrue(after.getReservedQuantity().compareTo(BigDecimal.ZERO) >= 0);
+	}
+
+	@Test
+	void completionFailuresRollbackOrderAndInventory() {
+		for (CompletionRollbackPoint point : CompletionRollbackPoint.values()) {
+			assertCompletionRollback(point);
+		}
+	}
+
+	@Test
+	void failedCompletionCanBeRetriedAndMovesInventoryExactlyOnce() {
+		Fixture fixture = createFixture(1);
+		Reservation reservation = reserve(
+				fixture,
+				fixture.customers().getFirst(),
+				"reserve-completion-retry-" + UUID.randomUUID());
+		OrderResponse confirmed = convert(
+				fixture,
+				fixture.customers().getFirst(),
+				reservation,
+				"order-completion-retry-" + UUID.randomUUID());
+		Inventory before = inventoryRepository
+				.findById(fixture.inventory().getId())
+				.orElseThrow();
+		completionObserver.failAt(
+				confirmed.getPublicId(),
+				CompletionRollbackPoint.ORDER_UPDATE);
+
+		assertThrows(
+				TestOrderFailure.class,
+				() -> orderService.completeOrder(
+						fixture.customers().getFirst().getPublicId(),
+						confirmed.getPublicId()));
+		entityManager.clear();
+		com.foodsaver.entity.Order rolledBackOrder = orderRepository
+				.findByPublicIdAndCustomerPublicId(
+						confirmed.getPublicId(),
+						fixture.customers().getFirst().getPublicId())
+				.orElseThrow();
+		Inventory rolledBackInventory = inventoryRepository
+				.findById(fixture.inventory().getId())
+				.orElseThrow();
+		assertEquals(OrderStatus.CONFIRMED, rolledBackOrder.getStatus());
+		assertEquals(null, rolledBackOrder.getCompletedAt());
+		assertEquals(
+				before.getReservedQuantity(),
+				rolledBackInventory.getReservedQuantity());
+		assertEquals(before.getSoldQuantity(), rolledBackInventory.getSoldQuantity());
+
+		completionObserver.reset();
+		OrderResponse completed = orderService.completeOrder(
+				fixture.customers().getFirst().getPublicId(),
+				confirmed.getPublicId());
+		entityManager.clear();
+		Inventory after = inventoryRepository
+				.findById(fixture.inventory().getId())
+				.orElseThrow();
+		assertEquals(OrderStatus.COMPLETED, completed.getStatus());
+		assertEquals(
+				before.getReservedQuantity().subtract(reservation.getQuantity()),
+				after.getReservedQuantity());
+		assertEquals(
+				before.getSoldQuantity().add(reservation.getQuantity()),
+				after.getSoldQuantity());
+		assertEquals(
+				ReservationStatus.CONVERTED,
+				reservationRepository.findById(reservation.getId())
+						.orElseThrow()
+						.getStatus());
+	}
+
+	@Test
+	void completionRejectsOrphanConvertedReservationWithoutInventoryMutation() {
+		Fixture fixture = createFixture(2);
+		Reservation orderReservation = reserve(
+				fixture,
+				fixture.customers().getFirst(),
+				"reserve-completion-orphan-order-" + UUID.randomUUID());
+		OrderResponse order = convert(
+				fixture,
+				fixture.customers().getFirst(),
+				orderReservation,
+				"order-completion-orphan-" + UUID.randomUUID());
+		Reservation orphan = reserve(
+				fixture,
+				fixture.customers().get(1),
+				"reserve-completion-orphan-row-" + UUID.randomUUID());
+		Instant convertedAt = Reservation.normalizeTimestamp(Instant.now());
+		jdbcTemplate.update(
+				"""
+				update reservations
+				set status = 'CONVERTED', converted_at = ?,
+					updated_at = ?, version = version + 1
+				where id = ?
+				""",
+				Timestamp.from(convertedAt),
+				Timestamp.from(convertedAt),
+				orphan.getId());
+		entityManager.clear();
+		Inventory before = inventoryRepository
+				.findById(fixture.inventory().getId())
+				.orElseThrow();
+
+		assertThrows(
+				OrderCompletionConflictException.class,
+				() -> orderService.completeOrder(
+						fixture.customers().getFirst().getPublicId(),
+						order.getPublicId()));
+		entityManager.clear();
+		Inventory after = inventoryRepository
+				.findById(fixture.inventory().getId())
+				.orElseThrow();
+		assertEquals(before.getPreparedQuantity(), after.getPreparedQuantity());
+		assertEquals(before.getAvailableQuantity(), after.getAvailableQuantity());
+		assertEquals(before.getReservedQuantity(), after.getReservedQuantity());
+		assertEquals(before.getSoldQuantity(), after.getSoldQuantity());
+	}
+
+	@Test
+	void completionRejectsPricingSnapshotMismatchWithoutInventoryMutation() {
+		Fixture fixture = createFixture(1);
+		Reservation reservation = reserve(
+				fixture,
+				fixture.customers().getFirst(),
+				"reserve-completion-price-" + UUID.randomUUID());
+		OrderResponse order = convert(
+				fixture,
+				fixture.customers().getFirst(),
+				reservation,
+				"order-completion-price-" + UUID.randomUUID());
+		com.foodsaver.entity.Order persistedOrder = orderRepository
+				.findByPublicIdAndCustomerPublicId(
+						order.getPublicId(),
+						fixture.customers().getFirst().getPublicId())
+				.orElseThrow();
+		jdbcTemplate.update(
+				"update order_items set unit_price = ? where order_id = ?",
+				reservation.getUnitPrice().add(BigDecimal.ONE),
+				persistedOrder.getId());
+		entityManager.clear();
+		Inventory before = inventoryRepository
+				.findById(fixture.inventory().getId())
+				.orElseThrow();
+
+		assertThrows(
+				OrderCompletionConflictException.class,
+				() -> orderService.completeOrder(
+						fixture.customers().getFirst().getPublicId(),
+						order.getPublicId()));
+		entityManager.clear();
+		Inventory after = inventoryRepository
+				.findById(fixture.inventory().getId())
+				.orElseThrow();
+		assertEquals(before.getPreparedQuantity(), after.getPreparedQuantity());
+		assertEquals(before.getAvailableQuantity(), after.getAvailableQuantity());
+		assertEquals(before.getReservedQuantity(), after.getReservedQuantity());
+		assertEquals(before.getSoldQuantity(), after.getSoldQuantity());
+	}
+
+	@Test
+	void completionRejectsInvalidInventoryEquationWithoutFurtherMutation() {
+		Fixture fixture = createFixture(1);
+		Reservation reservation = reserve(
+				fixture,
+				fixture.customers().getFirst(),
+				"reserve-completion-equation-" + UUID.randomUUID());
+		OrderResponse order = convert(
+				fixture,
+				fixture.customers().getFirst(),
+				reservation,
+				"order-completion-equation-" + UUID.randomUUID());
+		jdbcTemplate.update(
+				"""
+				update inventory
+				set prepared_quantity = prepared_quantity + 1
+				where id = ?
+				""",
+				fixture.inventory().getId());
+		entityManager.clear();
+		Inventory before = inventoryRepository
+				.findById(fixture.inventory().getId())
+				.orElseThrow();
+
+		assertThrows(
+				OrderCompletionConflictException.class,
+				() -> orderService.completeOrder(
+						fixture.customers().getFirst().getPublicId(),
+						order.getPublicId()));
+		entityManager.clear();
+		Inventory after = inventoryRepository
+				.findById(fixture.inventory().getId())
+				.orElseThrow();
+		assertEquals(before.getPreparedQuantity(), after.getPreparedQuantity());
+		assertEquals(before.getAvailableQuantity(), after.getAvailableQuantity());
+		assertEquals(before.getReservedQuantity(), after.getReservedQuantity());
+		assertEquals(before.getSoldQuantity(), after.getSoldQuantity());
+	}
+
+	@Test
+	void completionRejectsMissingOrderItemWithoutInventoryMutation() {
+		Fixture fixture = createFixture(1);
+		Reservation reservation = reserve(
+				fixture,
+				fixture.customers().getFirst(),
+				"reserve-completion-missing-item-" + UUID.randomUUID());
+		OrderResponse order = convert(
+				fixture,
+				fixture.customers().getFirst(),
+				reservation,
+				"order-completion-missing-item-" + UUID.randomUUID());
+		com.foodsaver.entity.Order persistedOrder = orderRepository
+				.findByPublicIdAndCustomerPublicId(
+						order.getPublicId(),
+						fixture.customers().getFirst().getPublicId())
+				.orElseThrow();
+		jdbcTemplate.update(
+				"delete from order_items where order_id = ?",
+				persistedOrder.getId());
+		entityManager.clear();
+		Inventory before = inventoryRepository
+				.findById(fixture.inventory().getId())
+				.orElseThrow();
+
+		assertThrows(
+				OrderCompletionConflictException.class,
+				() -> orderService.completeOrder(
+						fixture.customers().getFirst().getPublicId(),
+						order.getPublicId()));
+		entityManager.clear();
+		Inventory after = inventoryRepository
+				.findById(fixture.inventory().getId())
+				.orElseThrow();
+		assertEquals(before.getPreparedQuantity(), after.getPreparedQuantity());
+		assertEquals(before.getAvailableQuantity(), after.getAvailableQuantity());
+		assertEquals(before.getReservedQuantity(), after.getReservedQuantity());
+		assertEquals(before.getSoldQuantity(), after.getSoldQuantity());
+	}
+
+	@Test
+	void completionRunsReadCommittedAndIssuesCanonicalLockingSql() {
+		Fixture fixture = createFixture(1);
+		Reservation reservation = reserve(
+				fixture,
+				fixture.customers().getFirst(),
+				"reserve-complete-contract-" + UUID.randomUUID());
+		OrderResponse order = convert(
+				fixture,
+				fixture.customers().getFirst(),
+				reservation,
+				"order-complete-contract-" + UUID.randomUUID());
+		sqlStatementInspector.clear();
+
+		orderService.completeOrder(
+				fixture.customers().getFirst().getPublicId(),
+				order.getPublicId());
+
+		assertEquals(
+				"READ-COMMITTED",
+				completionObserver.isolation(order.getPublicId()));
+		assertTrue(completionObserver.transactionActive(order.getPublicId()));
+		assertOrderedLockingSql(
+				sqlStatementInspector.lockingSelectFor("offers"),
+				"offers");
+		assertOrderedLockingSql(
+				sqlStatementInspector.lockingSelectFor("reservations"),
+				"reservations");
+		String orderSql =
+				sqlStatementInspector.lockingSelectFor("customer_orders");
+		assertTrue(orderSql != null && orderSql.toLowerCase().contains(" for update"));
+	}
+
+	@Test
 	void replaysSameKeyAndRejectsDifferentRequestHash() {
 		Fixture fixture = createFixture(1);
 		Reservation first = reserve(
@@ -307,6 +878,15 @@ class OrderManagementIntegrationTests {
 						response.getPublicId(),
 						customer.getPublicId())
 				.orElseThrow();
+		assertThrows(
+				DataAccessException.class,
+				() -> jdbcTemplate.update(
+						"""
+						update customer_orders
+						set status = 'COMPLETED', completed_at = null
+						where id = ?
+						""",
+						firstOrder.getId()));
 
 		com.foodsaver.entity.Order duplicateKey = new com.foodsaver.entity.Order(
 				customer,
@@ -376,7 +956,7 @@ class OrderManagementIntegrationTests {
 						where table_schema = database()
 						  and table_name in ('customer_orders', 'order_items')
 						  and column_name in (
-							'confirmed_at', 'created_at', 'updated_at')
+							'confirmed_at', 'completed_at', 'created_at', 'updated_at')
 						""",
 						Integer.class));
 	}
@@ -907,6 +1487,59 @@ class OrderManagementIntegrationTests {
 		}
 	}
 
+	private void assertCompletionRollback(CompletionRollbackPoint point) {
+		Fixture fixture = createFixture(1);
+		Reservation reservation = reserve(
+				fixture,
+				fixture.customers().getFirst(),
+				"reserve-completion-rollback-" + UUID.randomUUID());
+		OrderResponse confirmed = convert(
+				fixture,
+				fixture.customers().getFirst(),
+				reservation,
+				"order-completion-rollback-" + UUID.randomUUID());
+		Inventory before = inventoryRepository
+				.findById(fixture.inventory().getId())
+				.orElseThrow();
+		completionObserver.failAt(confirmed.getPublicId(), point);
+
+		if (point == CompletionRollbackPoint.POST_INVARIANT) {
+			assertThrows(
+					OrderCompletionConflictException.class,
+					() -> orderService.completeOrder(
+							fixture.customers().getFirst().getPublicId(),
+							confirmed.getPublicId()));
+		} else {
+			assertThrows(
+					TestOrderFailure.class,
+					() -> orderService.completeOrder(
+							fixture.customers().getFirst().getPublicId(),
+							confirmed.getPublicId()));
+		}
+
+		entityManager.clear();
+		com.foodsaver.entity.Order persistedOrder = orderRepository
+				.findByPublicIdAndCustomerPublicId(
+						confirmed.getPublicId(),
+						fixture.customers().getFirst().getPublicId())
+				.orElseThrow();
+		Inventory after = inventoryRepository
+				.findById(fixture.inventory().getId())
+				.orElseThrow();
+		assertEquals(OrderStatus.CONFIRMED, persistedOrder.getStatus());
+		assertEquals(null, persistedOrder.getCompletedAt());
+		assertEquals(
+				ReservationStatus.CONVERTED,
+				reservationRepository.findById(reservation.getId())
+						.orElseThrow()
+						.getStatus());
+		assertEquals(before.getPreparedQuantity(), after.getPreparedQuantity());
+		assertEquals(before.getAvailableQuantity(), after.getAvailableQuantity());
+		assertEquals(before.getReservedQuantity(), after.getReservedQuantity());
+		assertEquals(before.getSoldQuantity(), after.getSoldQuantity());
+		assertEquals(before.getStatus(), after.getStatus());
+	}
+
 	private void assertRollback(String suffix, RollbackPoint rollbackPoint) {
 		Fixture fixture = createFixture(1);
 		Customer customer = fixture.customers().getFirst();
@@ -1098,6 +1731,14 @@ class OrderManagementIntegrationTests {
 		FINAL_INVARIANT
 	}
 
+	private enum CompletionRollbackPoint {
+		INVENTORY_UPDATE,
+		ORDER_UPDATE,
+		FLUSH,
+		POST_INVARIANT,
+		FINAL_VERIFICATION
+	}
+
 	static class TestOrderFailure extends RuntimeException {
 	}
 
@@ -1284,6 +1925,159 @@ class OrderManagementIntegrationTests {
 		}
 	}
 
+	static class TestCompletionObserver
+			extends OrderCompletionTransactionObserver {
+
+		private final JdbcTemplate jdbcTemplate;
+		private final java.util.Map<UUID, Long> connectionIds =
+				new ConcurrentHashMap<>();
+		private final java.util.Map<UUID, String> isolation =
+				new ConcurrentHashMap<>();
+		private final java.util.Set<UUID> transactionActive =
+				ConcurrentHashMap.newKeySet();
+		private final java.util.Map<UUID, TransactionBlock> inventoryBlocks =
+				new ConcurrentHashMap<>();
+		private final java.util.Map<UUID, CompletionRollbackPoint> failures =
+				new ConcurrentHashMap<>();
+
+		TestCompletionObserver(JdbcTemplate jdbcTemplate) {
+			this.jdbcTemplate = jdbcTemplate;
+		}
+
+		@Override
+		void beforeInventoryLock(UUID orderPublicId) {
+			connectionIds.put(
+					orderPublicId,
+					jdbcTemplate.queryForObject(
+							"select connection_id()",
+							Long.class));
+			isolation.put(
+					orderPublicId,
+					jdbcTemplate.queryForObject(
+							"select @@transaction_isolation",
+							String.class));
+			if (TransactionSynchronizationManager.isActualTransactionActive()) {
+				transactionActive.add(orderPublicId);
+			}
+		}
+
+		@Override
+		void afterInventoryLock(UUID orderPublicId) {
+			TransactionBlock block = inventoryBlocks.get(orderPublicId);
+			if (block != null) {
+				block.entered().countDown();
+				awaitLatch(block.release());
+			}
+		}
+
+		@Override
+		void afterInventoryUpdate(UUID orderPublicId, Inventory inventory) {
+			failIf(orderPublicId, CompletionRollbackPoint.INVENTORY_UPDATE);
+		}
+
+		@Override
+		void afterOrderCompletion(
+				UUID orderPublicId,
+				com.foodsaver.entity.Order order) {
+			failIf(orderPublicId, CompletionRollbackPoint.ORDER_UPDATE);
+		}
+
+		@Override
+		void afterFlush(UUID orderPublicId) {
+			failIf(orderPublicId, CompletionRollbackPoint.FLUSH);
+		}
+
+		@Override
+		void beforePostMutationValidation(
+				UUID orderPublicId,
+				Inventory inventory,
+				com.foodsaver.entity.Order order) {
+			if (failures.get(orderPublicId)
+					== CompletionRollbackPoint.POST_INVARIANT) {
+				inventory.setReservedQuantity(
+						inventory.getReservedQuantity().subtract(BigDecimal.ONE));
+				inventory.setSoldQuantity(
+						inventory.getSoldQuantity().add(BigDecimal.ONE));
+			}
+		}
+
+		@Override
+		void beforeFinalVerification(
+				UUID orderPublicId,
+				Inventory inventory,
+				com.foodsaver.entity.Order order) {
+			failIf(orderPublicId, CompletionRollbackPoint.FINAL_VERIFICATION);
+		}
+
+		TransactionBlock blockAfterInventoryLock(UUID orderPublicId) {
+			TransactionBlock block = new TransactionBlock(
+					new CountDownLatch(1),
+					new CountDownLatch(1));
+			inventoryBlocks.put(orderPublicId, block);
+			return block;
+		}
+
+		long awaitConnection(UUID orderPublicId) {
+			long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+			while (System.nanoTime() < deadline) {
+				Long connectionId = connectionIds.get(orderPublicId);
+				if (connectionId != null) {
+					return connectionId;
+				}
+				Thread.yield();
+			}
+			throw new AssertionError(
+					"Completion transaction did not expose a MySQL connection");
+		}
+
+		String isolation(UUID orderPublicId) {
+			return isolation.get(orderPublicId);
+		}
+
+		boolean transactionActive(UUID orderPublicId) {
+			return transactionActive.contains(orderPublicId);
+		}
+
+		void failAt(UUID orderPublicId, CompletionRollbackPoint point) {
+			failures.put(orderPublicId, point);
+		}
+
+		void reset() {
+			connectionIds.clear();
+			isolation.clear();
+			transactionActive.clear();
+			inventoryBlocks.clear();
+			failures.clear();
+		}
+
+		private void failIf(
+				UUID orderPublicId,
+				CompletionRollbackPoint point) {
+			if (failures.get(orderPublicId) == point) {
+				throw new TestOrderFailure();
+			}
+		}
+
+		private void awaitLatch(CountDownLatch latch) {
+			try {
+				if (!latch.await(10, TimeUnit.SECONDS)) {
+					throw new IllegalStateException(
+							"Timed out waiting in completion observer");
+				}
+			} catch (InterruptedException exception) {
+				Thread.currentThread().interrupt();
+				throw new IllegalStateException(
+						"Interrupted in completion observer",
+						exception);
+			}
+		}
+
+		record TransactionBlock(
+				CountDownLatch entered,
+				CountDownLatch release) {
+		}
+	}
+
 	static class TestOrderSqlStatementInspector implements StatementInspector {
 
 		private final List<String> statements = new CopyOnWriteArrayList<>();
@@ -1324,6 +2118,13 @@ class OrderManagementIntegrationTests {
 		TestOrderObserver testOrderConversionTransactionObserver(
 				JdbcTemplate jdbcTemplate) {
 			return new TestOrderObserver(jdbcTemplate);
+		}
+
+		@Bean
+		@Primary
+		TestCompletionObserver testOrderCompletionTransactionObserver(
+				JdbcTemplate jdbcTemplate) {
+			return new TestCompletionObserver(jdbcTemplate);
 		}
 
 		@Bean

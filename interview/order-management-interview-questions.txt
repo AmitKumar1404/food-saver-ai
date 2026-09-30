@@ -14,7 +14,7 @@ transition on the source Reservation.
 
 Q3. Does Order creation move Inventory reserved quantity to sold?
 Answer: No. CONVERTED Reservations still count in the reserved ledger. A
-future completion or fulfillment workflow will perform reserved-to-sold.
+separate completion transaction performs reserved-to-sold.
 
 Q4. Why does the API expose UUIDs instead of database IDs?
 Answer: Public UUIDs keep internal storage identifiers out of the API and
@@ -70,11 +70,12 @@ against concurrent allocation. It also preserves the shared canonical order.
 
 Q16. Which ledger invariants are checked?
 Answer: prepared equals available plus reserved plus sold, and reserved equals
-the sum of ACTIVE plus CONVERTED Reservation quantities.
+ACTIVE Reservation quantity plus CONVERTED Reservation quantity linked to
+CONFIRMED Orders.
 
-Q17. Why does CONVERTED remain in the reserved sum?
-Answer: Conversion confirms the Order but does not fulfill it. The quantity
-remains physically reserved until a future completion workflow moves it.
+Q17. When does a CONVERTED Reservation remain in the reserved sum?
+Answer: While its linked Order is CONFIRMED. It remains CONVERTED after Order
+completion for history, but is excluded from outstanding reserved quantity.
 
 Q18. What happens when an invariant is inconsistent?
 Answer: Conversion fails closed with a controlled conflict. There is no
@@ -128,13 +129,14 @@ as allocation. If that durable baseline is not active, conversion must fail
 closed.
 
 Q29. What would be wrong with decrementing reserved during V1 conversion?
-Answer: The Reservation changes to CONVERTED, which remains included in the
-ledger sum, so Inventory.reserved would no longer equal the ledger.
+Answer: The Reservation changes to CONVERTED under a CONFIRMED Order, which
+remains included in the outstanding ledger, so Inventory.reserved would no
+longer equal the ledger.
 
-Q30. What belongs in the future fulfillment module?
-Answer: The atomic reserved-to-sold Inventory movement and the corresponding
-lifecycle semantics. Payment, delivery, refunds, and cancellation are also
-outside Order Management V1.
+Q30. What belongs in the fulfillment module?
+Answer: The atomic reserved-to-sold Inventory movement and CONFIRMED-to-
+COMPLETED lifecycle transition. Payment, delivery, refunds, and cancellation
+remain outside this accounting transition.
 
 Q31. Does this implementation prove production reconciliation is complete?
 Answer: No. Reconciliation and activation of the production baseline remain

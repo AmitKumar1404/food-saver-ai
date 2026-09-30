@@ -13,6 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.foodsaver.config.ReservationAllocationActivation;
 import com.foodsaver.dto.request.OrderCreateRequest;
 import com.foodsaver.dto.response.OrderResponse;
+import com.foodsaver.exception.OrderCompletionConflictException;
 import com.foodsaver.exception.OrderConversionConflictException;
 import com.foodsaver.exception.OrderIdempotencyRaceException;
 import com.foodsaver.exception.OrderNotFoundException;
@@ -28,6 +29,7 @@ public class OrderServiceImpl implements OrderService {
 
 	private final ReservationAllocationActivation allocationActivation;
 	private final OrderConversionCommand conversionCommand;
+	private final OrderCompletionCommand completionCommand;
 	private final OrderReplayService replayService;
 	private final OrderRepository orderRepository;
 	private final OrderItemRepository orderItemRepository;
@@ -36,12 +38,14 @@ public class OrderServiceImpl implements OrderService {
 	public OrderServiceImpl(
 			ReservationAllocationActivation allocationActivation,
 			OrderConversionCommand conversionCommand,
+			OrderCompletionCommand completionCommand,
 			OrderReplayService replayService,
 			OrderRepository orderRepository,
 			OrderItemRepository orderItemRepository,
 			OrderResponseMapper responseMapper) {
 		this.allocationActivation = allocationActivation;
 		this.conversionCommand = conversionCommand;
+		this.completionCommand = completionCommand;
 		this.replayService = replayService;
 		this.orderRepository = orderRepository;
 		this.orderItemRepository = orderItemRepository;
@@ -101,6 +105,27 @@ public class OrderServiceImpl implements OrderService {
 				.orElseThrow(() -> new OrderConversionConflictException(
 						"Order persistence is incomplete"));
 		return responseMapper.toResponse(order, item);
+	}
+
+	@Override
+	public OrderResponse completeOrder(
+			UUID customerPublicId,
+			UUID orderPublicId) {
+		if (customerPublicId == null || orderPublicId == null) {
+			throw new OrderValidationException(
+					"Customer and Order public IDs are required");
+		}
+		allocationActivation.requireActive();
+		try {
+			return completionCommand.complete(
+					new OrderCompletionCommand.OrderCompletionRequest(
+							customerPublicId,
+							orderPublicId));
+		} catch (PessimisticLockingFailureException exception) {
+			throw new OrderCompletionConflictException(
+					"Order completion is temporarily unavailable; retry the request",
+					exception);
+		}
 	}
 
 	private OrderResponse convertWithLockTranslation(

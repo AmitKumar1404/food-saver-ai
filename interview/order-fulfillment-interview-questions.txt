@@ -1,0 +1,102 @@
+============================================================
+FOODSAVER AI - ORDER FULFILLMENT V1 INTERVIEW QUESTIONS
+============================================================
+
+1. BEGINNER
+
+Q1. What does Order Completion V1 mean?
+Answer: It changes a CONFIRMED Order to COMPLETED and accounts the held
+quantity from Inventory reserved to sold. It does not mean payment, delivery,
+pickup verification, refund, or food-safety certification.
+
+Q2. What happens to the source Reservation?
+Answer: It remains CONVERTED for audit history.
+
+Q3. Which Inventory fields change?
+Answer: reserved decreases and sold increases by the OrderItem quantity.
+Available, prepared, and Inventory status remain unchanged.
+
+Q4. Is pricing recalculated at completion?
+Answer: No. OrderItem and Reservation snapshots remain authoritative.
+
+2. INTERMEDIATE
+
+Q5. What is the completion-aware outstanding-reserved ledger?
+Answer: ACTIVE Reservation quantity plus CONVERTED Reservation quantity linked
+to CONFIRMED Orders. Converted Reservations linked to COMPLETED Orders are
+excluded.
+
+Q6. Why must orphan CONVERTED Reservations fail closed?
+Answer: Without exactly one OrderItem and Order, the service cannot determine
+whether their quantity is still outstanding or already sold.
+
+Q7. Why is no completion idempotency key needed?
+Answer: The Order row is locked and its lifecycle is the durable idempotency
+boundary. CONFIRMED performs the transition; COMPLETED returns unchanged.
+
+Q8. How are completion timestamps produced?
+Answer: The server captures one timestamp after all locks, normalizes it to
+MySQL TIMESTAMP(6), and uses it for both completedAt and updatedAt.
+
+Q9. Which isolation level is used?
+Answer: READ_COMMITTED. Correctness comes from pessimistic row locks,
+post-lock validation, database constraints, and one atomic transaction.
+
+3. ADVANCED
+
+Q10. What is the exact completion lock order?
+Answer: Customer PESSIMISTIC_WRITE, Order PESSIMISTIC_WRITE, Restaurant
+PESSIMISTIC_READ, Product PESSIMISTIC_READ, Inventory PESSIMISTIC_WRITE,
+Offers PESSIMISTIC_WRITE in ascending internal ID, then Reservations
+PESSIMISTIC_WRITE in ascending internal ID.
+
+Q11. Why is Order locked before Inventory?
+Answer: It serializes lifecycle/idempotent replay before quantity mutation and
+ensures no completion path acquires Order after entering the shared
+Inventory-to-Reservation lock suffix.
+
+Q12. Why is OrderItem not separately locked?
+Answer: V1 OrderItem is immutable and uniquely belongs to the locked Order,
+but it is still reloaded and fully revalidated inside the transaction.
+
+Q13. What must hold before and after mutation?
+Answer: prepared equals available plus reserved plus sold, and Inventory
+reserved equals the completion-aware outstanding Reservation ledger.
+
+Q14. What prevents two requests from completing one Order twice?
+Answer: The Order write lock serializes them. The winner changes status and
+Inventory once; the waiter observes COMPLETED and returns persisted state.
+
+Q15. What prevents two Orders sharing Inventory from losing updates?
+Answer: Both must acquire the same Inventory write lock before validating the
+current ledger or changing reserved and sold quantities.
+
+4. SCENARIO QUESTIONS
+
+Q16. A failure occurs after both Order and Inventory are changed. What commits?
+Answer: Nothing. The transaction rolls back Order to CONFIRMED with null
+completedAt and restores Inventory; Reservation remains CONVERTED.
+
+Q17. Completion is retried after a transaction failure. What happens?
+Answer: Because the failed transaction committed no lifecycle or quantity
+change, the still-CONFIRMED Order can be completed normally.
+
+Q18. Completion is retried after success. What happens?
+Answer: The existing completed representation and original completedAt are
+returned with no additional Inventory mutation.
+
+Q19. Why are real MySQL tests required?
+Answer: Mocks and H2 cannot establish MySQL FOR UPDATE behavior, actual lock
+waiting, READ_COMMITTED visibility, TIMESTAMP(6), or production constraint
+semantics.
+
+Q20. What must happen before production activation?
+Answer: Apply an explicit schema migration and reconcile every converted
+Reservation, confirmed outstanding quantity, Inventory equation, and orphan
+condition. Do not infer historical sold quantity or silently repair data.
+
+Q21. Is there a Restaurant-scoped fulfillment API in V1?
+Answer: No. Completion is Order-scoped through the Customer-owned endpoint
+POST /api/v1/customers/{customerPublicId}/orders/{orderPublicId}/complete.
+Authentication and authorization remain a production exposure requirement;
+public UUID ownership scoping is not authentication.

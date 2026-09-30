@@ -5,8 +5,13 @@ import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import com.foodsaver.entity.Order;
+
+import jakarta.persistence.LockModeType;
 
 public interface OrderRepository extends JpaRepository<Order, Long> {
 
@@ -21,6 +26,17 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
 	Optional<Order> findByPublicIdAndCustomerPublicId(
 			UUID publicId,
 			UUID customerPublicId);
+
+	@Lock(LockModeType.PESSIMISTIC_WRITE)
+	@Query("""
+			select customerOrder
+			from Order customerOrder
+			where customerOrder.id = :orderId
+			  and customerOrder.customer.id = :customerId
+			""")
+	Optional<Order> findByIdAndCustomerIdForCompletion(
+			@Param("orderId") Long orderId,
+			@Param("customerId") Long customerId);
 
 	List<Order> findAllByCustomerId(Long customerId);
 }

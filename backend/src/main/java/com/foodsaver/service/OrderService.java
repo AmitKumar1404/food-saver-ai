@@ -13,4 +13,6 @@ public interface OrderService {
 			String idempotencyKey);
 
 	OrderResponse getOrder(UUID customerPublicId, UUID orderPublicId);
+
+	OrderResponse completeOrder(UUID customerPublicId, UUID orderPublicId);
 }

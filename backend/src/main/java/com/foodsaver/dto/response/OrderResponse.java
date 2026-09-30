@@ -22,6 +22,7 @@ public class OrderResponse {
 	private BigDecimal totalAmount;
 	private String currencyCode;
 	private Instant confirmedAt;
+	private Instant completedAt;
 	private Instant createdAt;
 	private Instant updatedAt;
 	private OrderItemResponse item;
