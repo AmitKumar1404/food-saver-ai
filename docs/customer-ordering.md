@@ -17,7 +17,10 @@ persistence now includes `ReservationStatus`, the `Reservation` entity,
 `ReservationRepository`, and focused real-MySQL persistence tests; Reservation
 DTOs and the first transactional service foundation are also implemented.
 Reservation inventory allocation, pessimistic locking, concurrent idempotency
-recovery, expiry processing, controllers, and HTTP APIs remain unimplemented.
+recovery, expiry processing, cancellation, and read APIs remain unimplemented.
+`POST /api/v1/customers/{customerPublicId}/reservations`, its OpenAPI contract,
+focused controller tests, and narrow Reservation HTTP exception mappings are
+implemented.
 
 The proposed flow extends the implemented FoodSaver domain:
 
@@ -1362,19 +1365,22 @@ APIs remain unimplemented.
 
 ### 26.2 Reservation
 
-The request/response DTOs and service contract are implemented, but no
-Reservation controller or HTTP endpoint is implemented yet. The following
-paths remain the approved future API design:
+The Reservation creation endpoint is implemented:
 
 ```http
 POST /api/v1/customers/{customerPublicId}/reservations
+```
+
+The following paths remain unimplemented future API design:
+
+```http
 POST /api/v1/customers/{customerPublicId}/reservations/{reservationPublicId}/cancel
 GET  /api/v1/customers/{customerPublicId}/reservations/{reservationPublicId}
 ```
 
 Create headers:
 
-- required `Idempotency-Key`
+- required, non-blank `Idempotency-Key` with at most 100 characters
 
 Create request fields:
 
@@ -1392,6 +1398,31 @@ The client cannot submit:
 - price, currency, total, status, or expiry;
 - Inventory quantities; or
 - food eligibility status.
+
+The controller accepts `customerPublicId` as a UUID, applies Bean Validation to
+`ReservationCreateRequest`, validates only the HTTP header shape, and delegates
+the exact UUID, DTO, and unmodified idempotency key to `ReservationService`.
+Successful creation returns `201 Created` and `ReservationResponse`.
+
+HTTP behavior:
+
+- `400 Bad Request`: malformed Customer UUID or JSON, DTO validation failure,
+  or missing, blank, or overlength `Idempotency-Key`;
+- `404 Not Found`: Customer or Offer does not exist; and
+- `409 Conflict`: Reservation lifecycle/business validation or idempotency
+  payload conflict.
+
+All failures use the existing `ErrorResponse`. Hash calculation, replay
+decisions, pricing, expiry, source validation, and persistence remain service
+responsibilities. The controller does not access repositories or evaluate Food
+Eligibility.
+
+This HTTP increment does not mutate Inventory quantities, acquire pessimistic
+locks, calculate aggregate allocation, prevent overselling, recover concurrent
+idempotency races, cancel or read Reservations, or run expiry processing.
+Those protections belong to the final allocation/lifecycle transactions.
+`ELIGIBLE_FOR_OFFER` remains an upstream workflow result and is not food-safety
+certification.
 
 ### 26.3 Order
 
@@ -1678,14 +1709,16 @@ Incremental steps:
    (Completed)
 6. Reservation DTOs, validation, service contract, pricing/TTL snapshots, and
    sequential idempotency foundation. (Completed)
-7. Reservation concurrency-safe allocation service and API.
-8. Reservation cancellation and expiry service.
-9. OrderStatus, Order, and OrderItem persistence.
-10. Order creation from Reservations.
-11. Order completion and cancellation.
-12. Remaining global exception mappings and OpenAPI.
-13. Unit, controller, and real-MySQL integration tests.
-14. Continue Customer Ordering interview material for each increment.
+7. Reservation creation controller, HTTP exception mapping, and OpenAPI.
+   (Completed)
+8. Reservation concurrency-safe allocation transaction.
+9. Reservation cancellation and expiry service.
+10. OrderStatus, Order, and OrderItem persistence.
+11. Order creation from Reservations.
+12. Order completion and cancellation.
+13. Remaining global exception mappings and OpenAPI.
+14. Unit, controller, and real-MySQL integration tests.
+15. Continue Customer Ordering interview material for each increment.
 
 No implementation step should combine all layers without review.
 
@@ -1767,7 +1800,13 @@ configured and Offer-capped expiry, deterministic SHA-256 hashing, sequential
 idempotency replay/conflict behavior, approved response isolation, and that
 Inventory remains unchanged without pessimistic repository access.
 
-Future allocation and API coverage must verify:
+Implemented controller coverage verifies `201` creation and exact service
+delegation, required idempotency-header validation, malformed UUID/JSON and DTO
+validation `400` responses, Customer/Offer `404` responses, Reservation
+conflict `409` responses, approved response isolation, and OpenAPI schemas plus
+the required header contract.
+
+Future allocation and lifecycle API coverage must verify:
 
 - Successful hold from an active, unexpired Offer.
 - Offer status and expiry rejection.

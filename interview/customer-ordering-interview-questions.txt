@@ -28,11 +28,13 @@ Current implementation:
 - ReservationService create foundation with server-side pricing, configured
   TTL, and sequential idempotency behavior
 - Reservation service and DTO tests
+- ReservationController create endpoint, required Idempotency-Key validation,
+  OpenAPI contract, HTTP exception mappings, and controller tests
 
 Not yet implemented:
 - Customer update, delete, list, or search APIs
-- Reservation controller/API, Inventory allocation, pessimistic locking,
-  concurrent idempotency recovery, cancellation, expiry, and lifecycle workers
+- Reservation GET/cancel APIs, Inventory allocation, pessimistic locking,
+  concurrent idempotency recovery, expiry, and lifecycle workers
 - Order or OrderItem persistence and workflows
 - Ordering transactions, expiry processing, or idempotency services
 - Kafka, Redis, AI, RAG, payment, authentication, or authorization
@@ -477,7 +479,8 @@ Expected answer:
 ReservationService accepts the Customer public UUID, ReservationCreateRequest,
 and idempotency key. It resolves Customer and Offer from public identifiers,
 derives upstream relationships and snapshots server-side, and returns
-ReservationResponse. No controller exists yet.
+ReservationResponse. ReservationController now supplies these three exact
+inputs from the create HTTP boundary.
 
 
 Q52. Why does ReservationCreateRequest contain only offerPublicId and quantity?
@@ -547,3 +550,105 @@ Expected answer:
 No. The service consumes the persisted Offer as the marketplace source. It
 does not re-run, weaken, or replace deterministic Food Eligibility rules, and
 Reservation ACTIVE remains a marketplace lifecycle state only.
+
+
+============================================================
+7. RESERVATION CREATE HTTP API
+============================================================
+
+Q60. What is the implemented Reservation creation endpoint?
+
+Expected answer:
+POST /api/v1/customers/{customerPublicId}/reservations accepts a UUID path
+parameter, validated ReservationCreateRequest body, and required
+Idempotency-Key header. It delegates to ReservationService and returns
+ReservationResponse with HTTP 201 Created.
+
+
+Q61. Why should ReservationController contain minimal business logic?
+
+Expected answer:
+The controller owns HTTP binding, DTO validation, header-shape validation, and
+status codes. Pricing, expiry, lifecycle rules, relationships, idempotency
+hashing/replay, transactions, and persistence belong to ReservationService so
+they remain consistent outside HTTP and are independently testable.
+
+
+Q62. Why is Idempotency-Key a request header?
+
+Expected answer:
+It describes retry semantics for the create operation rather than Reservation
+business data. The controller requires a non-blank value of at most 100
+characters and passes it unchanged to the service; it does not calculate the
+request hash or decide replay behavior.
+
+
+Q63. Why can the client not submit price, currency, or expiry?
+
+Expected answer:
+They are trusted server snapshots derived from the persisted Offer and the
+configured TTL. Accepting them from the client would permit price, currency,
+or hold-window manipulation.
+
+
+Q64. Why does the endpoint return ReservationResponse instead of Reservation?
+
+Expected answer:
+The DTO exposes only approved public/business fields. It excludes internal
+database IDs, optimistic-lock version, idempotency key, request hash, lazy JPA
+relationships, and other persistence details.
+
+
+Q65. How is a malformed customerPublicId handled?
+
+Expected answer:
+Spring UUID conversion raises MethodArgumentTypeMismatchException before the
+service runs. GlobalExceptionHandler returns HTTP 400 with "Invalid path
+parameter" and a customerPublicId error saying it must be a valid UUID.
+
+
+Q66. Why use GlobalExceptionHandler for Reservation failures?
+
+Expected answer:
+Central handling keeps ErrorResponse consistent and prevents repetitive
+try/catch blocks in controllers. CustomerNotFoundException and
+OfferNotFoundException map to 404, while ReservationValidationException and
+ReservationIdempotencyConflictException map to 409.
+
+
+Q67. What is the difference between 400, 404, and 409 for this endpoint?
+
+Expected answer:
+400 means the HTTP input is malformed or fails structural validation. 404
+means the referenced Customer or Offer does not exist. 409 means the request
+is structurally valid but current lifecycle/business state or prior
+idempotency-key use conflicts with creation.
+
+
+Q68. Why is controller validation insufficient for concurrency correctness?
+
+Expected answer:
+Bean Validation and header checks inspect one request only. They cannot
+serialize competing transactions, calculate authoritative aggregate
+allocation, or recover a database uniqueness race. Those controls belong in
+the future lock-based allocation transaction.
+
+
+Q69. Does the create endpoint reserve Inventory quantity today?
+
+Expected answer:
+No. The controller delegates to the current service foundation, which persists
+the Reservation snapshot without moving Inventory available quantity to
+reserved quantity. This limitation is explicit until the concurrency-safe
+allocation transaction is implemented.
+
+
+Q70. How does the controller contract support future concurrency-safe
+allocation?
+
+Expected answer:
+It already passes the Customer public UUID, validated Offer/quantity request,
+and idempotency key through one stable service boundary. The future service
+implementation can add deterministic locks, post-lock validation, atomic
+Inventory movement, and concurrent retry recovery without moving those rules
+into the controller or changing the request DTO.
