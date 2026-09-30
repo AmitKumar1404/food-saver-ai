@@ -2,6 +2,7 @@ package com.foodsaver.repository;
 
 import java.time.Instant;
 import java.util.Optional;
+import java.util.UUID;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
@@ -12,6 +13,8 @@ import com.foodsaver.enums.OfferStatus;
 import jakarta.persistence.LockModeType;
 
 public interface OfferRepository extends JpaRepository<Offer, Long> {
+
+	Optional<Offer> findByPublicId(UUID publicId);
 
 	@Lock(LockModeType.PESSIMISTIC_WRITE)
 	Optional<Offer> findFirstByInventoryIdAndStatusAndExpiresAtAfterOrderByIdAsc(

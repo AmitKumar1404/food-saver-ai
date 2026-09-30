@@ -15,6 +15,10 @@ public interface ReservationRepository extends JpaRepository<Reservation, Long> 
 			UUID publicId,
 			Long customerId);
 
+	Optional<Reservation> findByCustomerIdAndIdempotencyKey(
+			Long customerId,
+			String idempotencyKey);
+
 	boolean existsByCustomerIdAndIdempotencyKey(
 			Long customerId,
 			String idempotencyKey);

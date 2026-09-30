@@ -15,7 +15,9 @@ and HTTP mappings, migrations, schedulers, security rules, Kafka integration,
 Redis integration, and AI integration remain unimplemented. Reservation
 persistence now includes `ReservationStatus`, the `Reservation` entity,
 `ReservationRepository`, and focused real-MySQL persistence tests; Reservation
-services and APIs remain unimplemented.
+DTOs and the first transactional service foundation are also implemented.
+Reservation inventory allocation, pessimistic locking, concurrent idempotency
+recovery, expiry processing, controllers, and HTTP APIs remain unimplemented.
 
 The proposed flow extends the implemented FoodSaver domain:
 
@@ -788,6 +790,22 @@ A confirmed Order may be completed after Offer expiry. Offer expiry blocks new
 marketplace allocation; it does not retroactively invalidate a quantity that
 was validly reserved and confirmed.
 
+### 17.1 Implemented Reservation service foundation
+
+`ReservationService.createReservation` now resolves Customer and Offer by
+public UUID, requires active Customer, Offer, Restaurant, Product, and Inventory
+lifecycle state, validates the Offer time window and relationship chain, and
+requires consistent Offer, Product, and Restaurant currency. The request
+contains only `offerPublicId` and a positive `DECIMAL(12,3)`-compatible
+quantity. Restaurant, Product, Inventory, price, currency, status, and expiry
+are server-derived.
+
+The foundation snapshots `Offer.offerPrice`, calculates
+`quantity * unitPrice` at scale 2 with `HALF_UP`, creates an `ACTIVE`
+Reservation, and maps only approved public/business response fields. It
+deliberately does not mutate Inventory, calculate concurrent Offer allocation,
+or claim overselling protection.
+
 ## 18. Reservation Expiry Strategy
 
 The Reservation expiry is server-generated:
@@ -803,9 +821,9 @@ V1 uses one global Reservation TTL configured through:
 foodsaver.ordering.reservation-ttl
 ```
 
-The property value and environment-variable mapping will be finalized when the
-Reservation implementation begins. V1 does not vary the TTL by Restaurant,
-Offer, Product, or Customer.
+The development default is `PT15M`, configurable through `RESERVATION_TTL`.
+The service reads the property as `Duration`; it does not hard-code the hold
+duration. V1 does not vary the TTL by Restaurant, Offer, Product, or Customer.
 
 The configured TTL is an operational marketplace hold duration. It is not a
 food-safety limit.
@@ -893,6 +911,12 @@ unit model is approved.
 ## 20. Transaction Boundaries
 
 ### 20.1 Create Reservation transaction
+
+The implemented foundation performs Customer/Offer resolution, validation,
+idempotency replay lookup, snapshot calculation, and Reservation persistence
+in one transaction. It does not yet perform the locking, expired-hold release,
+capacity calculation, Inventory mutation, flush-time race translation, or
+post-lock revalidation required by the final transaction below.
 
 One transaction must include:
 
@@ -1160,6 +1184,14 @@ ordering are excluded.
 - Concurrent same-key requests: application pre-check plus named database
   unique constraint.
 
+The implemented foundation validates a non-blank key of at most 100
+characters, normalizes quantity to scale 3, and persists the lowercase
+64-character SHA-256 hash of the three newline-separated canonical values.
+Sequential same-key/same-hash calls return the existing Reservation, while a
+different hash raises `ReservationIdempotencyConflictException`. The unique
+database constraint remains the final invariant, but controlled recovery from
+a concurrent loser is not implemented in this increment.
+
 The persistence operation must flush inside the service transaction when
 constraint-specific translation is required.
 
@@ -1330,6 +1362,10 @@ APIs remain unimplemented.
 
 ### 26.2 Reservation
 
+The request/response DTOs and service contract are implemented, but no
+Reservation controller or HTTP endpoint is implemented yet. The following
+paths remain the approved future API design:
+
 ```http
 POST /api/v1/customers/{customerPublicId}/reservations
 POST /api/v1/customers/{customerPublicId}/reservations/{reservationPublicId}/cancel
@@ -1344,6 +1380,11 @@ Create request fields:
 
 - `offerPublicId`
 - `quantity`
+
+`ReservationResponse` exposes `publicId`, the Customer, Restaurant, Offer, and
+Inventory public UUIDs, quantity, unit price, total amount, currency, status,
+expiry, and creation/update timestamps. It excludes internal IDs, optimistic
+version, idempotency key, and request hash.
 
 The client cannot submit:
 
@@ -1635,14 +1676,16 @@ Incremental steps:
 4. Customer controller, HTTP exception mapping, and OpenAPI. (Completed)
 5. ReservationStatus, Reservation entity, constraints, and repositories.
    (Completed)
-6. Reservation transactional allocation service and API.
-7. Reservation cancellation and expiry service.
-8. OrderStatus, Order, and OrderItem persistence.
-9. Order creation from Reservations.
-10. Order completion and cancellation.
-11. Remaining global exception mappings and OpenAPI.
-12. Unit, controller, and real-MySQL integration tests.
-13. Continue Customer Ordering interview material for each increment.
+6. Reservation DTOs, validation, service contract, pricing/TTL snapshots, and
+   sequential idempotency foundation. (Completed)
+7. Reservation concurrency-safe allocation service and API.
+8. Reservation cancellation and expiry service.
+9. OrderStatus, Order, and OrderItem persistence.
+10. Order creation from Reservations.
+11. Order completion and cancellation.
+12. Remaining global exception mappings and OpenAPI.
+13. Unit, controller, and real-MySQL integration tests.
+14. Continue Customer Ordering interview material for each increment.
 
 No implementation step should combine all layers without review.
 
@@ -1717,6 +1760,15 @@ Future service and API coverage must verify:
 
 ### 36.3 Reservation service and API tests
 
+Implemented foundation coverage verifies Customer and upstream lifecycle
+rejection, Offer logical-window checks, quantity/relationship/currency
+validation, server-side price and amount snapshots, `HALF_UP` rounding,
+configured and Offer-capped expiry, deterministic SHA-256 hashing, sequential
+idempotency replay/conflict behavior, approved response isolation, and that
+Inventory remains unchanged without pessimistic repository access.
+
+Future allocation and API coverage must verify:
+
 - Successful hold from an active, unexpired Offer.
 - Offer status and expiry rejection.
 - Restaurant/Product/Inventory lifecycle rejection.
@@ -1773,17 +1825,16 @@ Future service and API coverage must verify:
 
 The following require confirmation before implementation:
 
-1. The global `foodsaver.ordering.reservation-ttl` value.
-2. Whether a Customer may hold multiple active Reservations for the same
+1. Whether a Customer may hold multiple active Reservations for the same
    Offer.
-3. Values for configurable limits:
+2. Values for configurable limits:
    `foodsaver.ordering.max-reservation-quantity` and
    `foodsaver.ordering.max-reservations-per-order`. No arbitrary hard-coded
    limits are approved.
-4. Whether a future security/account phase changes the V1 Customer email
+3. Whether a future security/account phase changes the V1 Customer email
    contract.
-5. Retention and anonymization requirements for Customer PII.
-6. The future unit-of-measure model.
+4. Retention and anonymization requirements for Customer PII.
+5. The future unit-of-measure model.
 
 Existing-code constraints:
 

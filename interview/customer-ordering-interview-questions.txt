@@ -24,10 +24,15 @@ Current implementation:
 - ReservationStatus
 - Reservation entity and ReservationRepository
 - Reservation real-MySQL persistence tests
+- ReservationCreateRequest and ReservationResponse
+- ReservationService create foundation with server-side pricing, configured
+  TTL, and sequential idempotency behavior
+- Reservation service and DTO tests
 
 Not yet implemented:
 - Customer update, delete, list, or search APIs
-- Reservation services, APIs, allocation, and lifecycle workflows
+- Reservation controller/API, Inventory allocation, pessimistic locking,
+  concurrent idempotency recovery, cancellation, expiry, and lifecycle workers
 - Order or OrderItem persistence and workflows
 - Ordering transactions, expiry processing, or idempotency services
 - Kafka, Redis, AI, RAG, payment, authentication, or authorization
@@ -460,3 +465,85 @@ Expected answer:
 No. This increment implements persistence only. A future transactional
 Reservation service must lock authoritative rows, validate state, and
 atomically move Inventory quantity from available to reserved.
+
+
+============================================================
+6. RESERVATION SERVICE FOUNDATION
+============================================================
+
+Q51. What is the implemented Reservation service boundary?
+
+Expected answer:
+ReservationService accepts the Customer public UUID, ReservationCreateRequest,
+and idempotency key. It resolves Customer and Offer from public identifiers,
+derives upstream relationships and snapshots server-side, and returns
+ReservationResponse. No controller exists yet.
+
+
+Q52. Why does ReservationCreateRequest contain only offerPublicId and quantity?
+
+Expected answer:
+Customer ownership comes from the future URL boundary, while Restaurant,
+Product, Inventory, price, currency, status, and expiry must be derived from
+trusted persisted state. Accepting those values from a client would permit
+source or pricing manipulation.
+
+
+Q53. How is Reservation pricing calculated?
+
+Expected answer:
+unitPrice is copied from immutable Offer.offerPrice. totalAmount is quantity
+multiplied by unitPrice and rounded to scale 2 with HALF_UP. The service does
+not recalculate the Offer price from the current Product base price.
+
+
+Q54. How is Reservation expiry calculated?
+
+Expected answer:
+The service captures one transaction time and chooses the earlier of that time
+plus foodsaver.ordering.reservation-ttl and Offer.expiresAt. The development
+default is PT15M, and the hold can never outlive the Offer.
+
+
+Q55. What is included in the Reservation idempotency request hash?
+
+Expected answer:
+SHA-256 is calculated over newline-separated Customer public UUID, Offer public
+UUID, and quantity normalized to database scale 3. Price, current time, expiry,
+and generated UUID are excluded so equivalent retries have the same hash.
+
+
+Q56. What idempotency behavior is implemented in this foundation?
+
+Expected answer:
+A sequential retry with the same Customer, key, and hash returns the existing
+Reservation. Reusing the key with a different hash throws
+ReservationIdempotencyConflictException. The database unique constraint remains
+the final invariant, but concurrent loser recovery is intentionally deferred.
+
+
+Q57. Why is createReservation transactional even though Inventory is not yet
+mutated?
+
+Expected answer:
+Customer/Offer resolution, idempotency lookup, lazy relationship validation,
+snapshot calculation, Reservation persistence, and response mapping form one
+consistent unit. This is not yet the final allocation transaction because it
+has no pessimistic locks or Inventory quantity movement.
+
+
+Q58. Does this service foundation prevent overselling?
+
+Expected answer:
+No. It validates that requested quantity does not exceed the immutable Offer
+quantity, but it does not calculate existing allocation or mutate Inventory.
+Overselling prevention requires the next increment's post-lock checks,
+Inventory available-to-reserved movement, and concurrent idempotency recovery.
+
+
+Q59. Does Reservation creation introduce new food-safety authority?
+
+Expected answer:
+No. The service consumes the persisted Offer as the marketplace source. It
+does not re-run, weaken, or replace deterministic Food Eligibility rules, and
+Reservation ACTIVE remains a marketplace lifecycle state only.
