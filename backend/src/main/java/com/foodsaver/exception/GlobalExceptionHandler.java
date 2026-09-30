@@ -268,7 +268,8 @@ public class GlobalExceptionHandler {
 
 	@ExceptionHandler({
 			ReservationValidationException.class,
-			ReservationIdempotencyConflictException.class
+			ReservationIdempotencyConflictException.class,
+			ReservationAllocationConflictException.class
 	})
 	public ResponseEntity<ErrorResponse> handleReservationConflict(
 			RuntimeException exception,

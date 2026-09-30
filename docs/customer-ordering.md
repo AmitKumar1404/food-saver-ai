@@ -15,9 +15,11 @@ and HTTP mappings, migrations, schedulers, security rules, Kafka integration,
 Redis integration, and AI integration remain unimplemented. Reservation
 persistence now includes `ReservationStatus`, the `Reservation` entity,
 `ReservationRepository`, and focused real-MySQL persistence tests; Reservation
-DTOs and the first transactional service foundation are also implemented.
-Reservation inventory allocation, pessimistic locking, concurrent idempotency
-recovery, expiry processing, cancellation, and read APIs remain unimplemented.
+DTOs and the concurrency-safe allocation service are also implemented.
+Reservation creation now uses pessimistic locking, authoritative Inventory and
+Reservation-ledger invariants, atomic expiry release, and concurrent
+idempotency recovery. The standalone expiry worker, cancellation, and read APIs
+remain unimplemented.
 `POST /api/v1/customers/{customerPublicId}/reservations`, its OpenAPI contract,
 focused controller tests, and narrow Reservation HTTP exception mappings are
 implemented.
@@ -793,21 +795,71 @@ A confirmed Order may be completed after Offer expiry. Offer expiry blocks new
 marketplace allocation; it does not retroactively invalidate a quantity that
 was validly reserved and confirmed.
 
-### 17.1 Implemented Reservation service foundation
+### 17.1 Implemented Reservation allocation service
 
-`ReservationService.createReservation` now resolves Customer and Offer by
-public UUID, requires active Customer, Offer, Restaurant, Product, and Inventory
-lifecycle state, validates the Offer time window and relationship chain, and
-requires consistent Offer, Product, and Restaurant currency. The request
-contains only `offerPublicId` and a positive `DECIMAL(12,3)`-compatible
-quantity. Restaurant, Product, Inventory, price, currency, status, and expiry
-are server-derived.
+`ReservationService.createReservation` is a non-transactional coordinator. It
+validates structural input and computes the canonical request hash before
+delegating to a separately proxied allocation command using
+`READ_COMMITTED`. The command locks Customer, Restaurant, Product, Inventory,
+all referenced Offers, and all active Reservations in canonical order.
 
-The foundation snapshots `Offer.offerPrice`, calculates
-`quantity * unitPrice` at scale 2 with `HALF_UP`, creates an `ACTIVE`
-Reservation, and maps only approved public/business response fields. It
-deliberately does not mutate Inventory, calculate concurrent Offer allocation,
-or claim overselling protection.
+While Inventory is write-locked, creation requires both:
+
+```text
+prepared = available + reserved + sold
+reserved = SUM(ACTIVE + CONVERTED Reservation quantity)
+```
+
+Expired active holds are released atomically before Offer allocation is
+recalculated. Successful creation moves Inventory quantity from available to
+reserved, persists the new active Reservation with `saveAndFlush`, and verifies
+both invariants again. Pricing, currency, and expiry remain server-derived.
+Any later failure rolls back expiry changes, Inventory movement, and the new
+Reservation together.
+
+### 17.2 Allocation feature gate and legacy reconciliation
+
+Allocation is disabled by default:
+
+```properties
+foodsaver.ordering.allocation-enabled=false
+```
+
+Tests enable it explicitly. Development data must be reset before enabling:
+remove foundation-era Reservation rows, reset affected Inventory fixtures, and
+verify the Inventory equation with `reservedQuantity = 0`. Test setup records
+an explicit `RESERVATION_ALLOCATION_V1` reconciliation marker; the production
+default is never weakened for development or tests.
+
+The durable `ordering_reconciliation_markers` row is keyed by the exact
+allocation release identifier. Its state moves from `RECONCILED_BASELINE` to
+`ACTIVATED` only after the `REPEATABLE_READ` startup preflight confirms there
+are no legacy `ACTIVE` or `CONVERTED` Reservations, every Inventory has
+`reservedQuantity = 0`, and both the Inventory equation and Reservation ledger
+are valid. The marker transition and preflight commit before an in-process
+activation guard permits allocation traffic. Missing, wrong-release, or
+invalid markers fail startup; requests also fail closed while preflight is
+incomplete. On later restarts, the activated release marker is still required
+and current Inventory and Reservation-ledger invariants are revalidated.
+Preflight uses its own non-locking `REPEATABLE_READ` snapshot and one grouped
+Reservation-ledger query, so Inventory values and Reservation sums come from
+one committed snapshot without globally blocking allocation writes. Runtime
+allocation remains `READ_COMMITTED`.
+
+Production must not enable the flag until Reservation writes are quiesced,
+data is backed up, every foundation-era active Reservation is explicitly
+classified without changing Inventory, no converted Reservation remains, all
+Inventory and ledger checks pass, and a durable release-specific
+reconciliation marker is recorded. The marker schema and validation are
+implemented, but no production reconciliation has been performed and no
+automatic quantity-based legacy matching exists. The operational process,
+cutoff, migration/deployment sequencing, and marker insertion remain production
+deployment tasks. Per-allocation invariant checks remain a runtime fail-closed
+defense; they do not replace that reconciliation.
+
+Reservation cancellation remains deferred because only Reservations created
+by the allocation transaction are guaranteed to own Inventory reserved
+quantity.
 
 ## 18. Reservation Expiry Strategy
 
@@ -915,13 +967,10 @@ unit model is approved.
 
 ### 20.1 Create Reservation transaction
 
-The implemented foundation performs Customer/Offer resolution, validation,
-idempotency replay lookup, snapshot calculation, and Reservation persistence
-in one transaction. It does not yet perform the locking, expired-hold release,
-capacity calculation, Inventory mutation, flush-time race translation, or
-post-lock revalidation required by the final transaction below.
-
-One transaction must include:
+The implemented non-transactional coordinator first checks the completed
+startup activation guard, validates structural input, and computes the request
+hash. A separately proxied command then performs the following in one
+`READ_COMMITTED` transaction:
 
 1. Resolve Customer and validate idempotency replay.
 2. Resolve Offer and derive Restaurant, Product, and Inventory IDs without
@@ -942,6 +991,21 @@ One transaction must include:
 13. Commit.
 
 Any failure rolls back both Reservation persistence and Inventory mutation.
+The authoritative transaction time is captured only after every canonical lock
+is acquired and is normalized once to MySQL `TIMESTAMP(6)` microsecond
+precision. It supplies both `createdAt` and the
+`min(transactionTime + TTL, offer.expiresAt)` expiry; a window that is not
+strictly positive after the same microsecond normalization is rejected before
+expiry release or Inventory mutation. Reservation lifecycle callbacks and
+timestamps use the same microsecond normalization, so immediate responses and
+reloaded database values remain identical.
+
+Same-key/same-hash `ACTIVE` replays enter the same lock sequence. If the hold is
+logically expired, that transaction validates the ledger and releases it
+exactly once before returning `EXPIRED`; it never returns a stale `ACTIVE`
+representation. A named unique-constraint loser exits and rolls back first,
+verifies the winner in a separate read-only transaction, and then re-enters the
+canonical command so the same logical-expiry rule applies.
 
 ### 20.2 Cancel Reservation transaction
 
@@ -1067,10 +1131,28 @@ Offer-to-Product lock order.
 
 Use `PESSIMISTIC_WRITE` for:
 
+- Customer rows that serialize Customer-scoped idempotency;
 - Inventory rows whose quantities will change;
 - Offer rows whose allocation capacity is being checked;
 - Reservation rows undergoing transition; and
 - Order rows undergoing completion or cancellation.
+
+Reservation allocation uses the canonical order:
+
+```text
+Customer PESSIMISTIC_WRITE
+    -> Restaurant PESSIMISTIC_READ
+    -> Product PESSIMISTIC_READ
+    -> Inventory PESSIMISTIC_WRITE
+    -> Offers PESSIMISTIC_WRITE ordered by internal ID
+    -> ACTIVE Reservations PESSIMISTIC_WRITE ordered by internal ID
+```
+
+The allocation transaction uses `READ_COMMITTED`, not MySQL's default
+`REPEATABLE_READ`, so aggregate queries executed after an Inventory lock wait
+see the latest committed Reservation ledger. The Inventory row is the
+serialization point; aggregate `SUM` queries validate state and are not used as
+a substitute for locking.
 
 The final availability and lifecycle checks must execute after locks are
 acquired. Pre-lock checks may provide early rejection but cannot authorize the
@@ -1187,13 +1269,18 @@ ordering are excluded.
 - Concurrent same-key requests: application pre-check plus named database
   unique constraint.
 
-The implemented foundation validates a non-blank key of at most 100
+The implemented coordinator validates a non-blank key of at most 100
 characters, normalizes quantity to scale 3, and persists the lowercase
 64-character SHA-256 hash of the three newline-separated canonical values.
-Sequential same-key/same-hash calls return the existing Reservation, while a
-different hash raises `ReservationIdempotencyConflictException`. The unique
-database constraint remains the final invariant, but controlled recovery from
-a concurrent loser is not implemented in this increment.
+The Customer write lock serializes same-Customer requests. Same-key/same-hash
+calls return the existing Reservation, while a different hash raises
+`ReservationIdempotencyConflictException`.
+
+The unique database constraint remains the final invariant. Only the named
+`uk_reservations_customer_idempotency` constraint is translated. Its loser
+exits and rolls back the allocation transaction before a separate
+`REQUIRES_NEW`, read-only replay transaction reads and verifies the winner.
+Unrelated integrity violations propagate unchanged.
 
 The persistence operation must flush inside the service transaction when
 constraint-specific translation is required.
@@ -1412,15 +1499,17 @@ HTTP behavior:
 - `409 Conflict`: Reservation lifecycle/business validation or idempotency
   payload conflict.
 
-All failures use the existing `ErrorResponse`. Hash calculation, replay
-decisions, pricing, expiry, source validation, and persistence remain service
-responsibilities. The controller does not access repositories or evaluate Food
-Eligibility.
+All failures use the existing `ErrorResponse`.
+`ReservationAllocationConflictException` maps narrowly to `409 Conflict`
+without exposing internal IDs, quantities, lock diagnostics, or SQL details.
+Hash calculation, replay decisions, pricing, expiry, source validation,
+locking, allocation, and persistence remain service responsibilities.
 
-This HTTP increment does not mutate Inventory quantities, acquire pessimistic
-locks, calculate aggregate allocation, prevent overselling, recover concurrent
-idempotency races, cancel or read Reservations, or run expiry processing.
-Those protections belong to the final allocation/lifecycle transactions.
+Creation now atomically moves Inventory from available to reserved, derives
+Offer allocation from active and converted Reservations, prevents concurrent
+overselling, and releases expired active holds encountered for the locked
+Inventory. It does not implement Reservation cancellation, a standalone expiry
+worker, or Reservation reads.
 `ELIGIBLE_FOR_OFFER` remains an upstream workflow result and is not food-safety
 certification.
 
@@ -1711,7 +1800,7 @@ Incremental steps:
    sequential idempotency foundation. (Completed)
 7. Reservation creation controller, HTTP exception mapping, and OpenAPI.
    (Completed)
-8. Reservation concurrency-safe allocation transaction.
+8. Reservation concurrency-safe allocation transaction. (Completed)
 9. Reservation cancellation and expiry service.
 10. OrderStatus, Order, and OrderItem persistence.
 11. Order creation from Reservations.
@@ -1793,12 +1882,19 @@ Future service and API coverage must verify:
 
 ### 36.3 Reservation service and API tests
 
-Implemented foundation coverage verifies Customer and upstream lifecycle
-rejection, Offer logical-window checks, quantity/relationship/currency
-validation, server-side price and amount snapshots, `HALF_UP` rounding,
-configured and Offer-capped expiry, deterministic SHA-256 hashing, sequential
-idempotency replay/conflict behavior, approved response isolation, and that
-Inventory remains unchanged without pessimistic repository access.
+Implemented allocation coverage verifies structural validation, canonical
+hashing, the disabled-by-default feature gate, Customer-scoped idempotency,
+canonical lock targets, lifecycle/relationship/currency revalidation,
+Inventory and Reservation-ledger fail-closed behavior, Offer and Inventory
+capacity, server pricing and expiry, available-to-reserved movement, expired
+hold release, rollback boundaries, and narrow named-constraint recovery.
+Real-MySQL coverage uses independent connections and latch/barrier coordination
+to verify actual Inventory lock waiting, runtime `READ-COMMITTED`, post-wait
+visibility of a committed ledger change, last-unit competition, concurrent
+logical-expiry replay, the real
+`uk_reservations_customer_idempotency` loser/recovery path, and rollback after
+expiry release or new-Reservation persistence. These tests do not use
+`Thread.sleep` for synchronization.
 
 Implemented controller coverage verifies `201` creation and exact service
 delegation, required idempotency-header validation, malformed UUID/JSON and DTO
@@ -1806,21 +1902,9 @@ validation `400` responses, Customer/Offer `404` responses, Reservation
 conflict `409` responses, approved response isolation, and OpenAPI schemas plus
 the required header contract.
 
-Future allocation and lifecycle API coverage must verify:
-
-- Successful hold from an active, unexpired Offer.
-- Offer status and expiry rejection.
-- Restaurant/Product/Inventory lifecycle rejection.
-- Current Inventory insufficiency.
-- Offer allocation insufficiency.
-- Positive quantity and precision validation.
-- Server-calculated totals and expiry.
-- Inventory `available -> reserved`.
-- No mutation of Offer pricing or eligibility.
-- Cancellation and expiry release exactly once.
-- Customer ownership isolation.
-- Idempotency replay and key/payload conflict.
-- Malformed body and path UUID `ErrorResponse`.
+Future lifecycle coverage must verify cancellation and the standalone expiry
+worker release exactly once, Customer ownership isolation for read/cancel
+operations, and concurrency with future Order conversion and cancellation.
 
 ### 36.4 Order service and API tests
 

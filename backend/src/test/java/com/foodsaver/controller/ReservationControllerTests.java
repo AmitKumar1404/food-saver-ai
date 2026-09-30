@@ -35,6 +35,7 @@ import com.foodsaver.exception.CustomerNotFoundException;
 import com.foodsaver.exception.ErrorResponse;
 import com.foodsaver.exception.GlobalExceptionHandler;
 import com.foodsaver.exception.OfferNotFoundException;
+import com.foodsaver.exception.ReservationAllocationConflictException;
 import com.foodsaver.exception.ReservationIdempotencyConflictException;
 import com.foodsaver.exception.ReservationValidationException;
 import com.foodsaver.service.ReservationService;
@@ -246,6 +247,15 @@ class ReservationControllerTests {
 		String message =
 				"Idempotency key was already used for a different Reservation request";
 		arrangeFailure(new ReservationIdempotencyConflictException(message));
+
+		assertErrorResponse(409, message);
+	}
+
+	@Test
+	void returnsConflictForReservationAllocationFailure() throws Exception {
+		String message =
+				"Reservation allocation conflicts with current marketplace state";
+		arrangeFailure(new ReservationAllocationConflictException(message));
 
 		assertErrorResponse(409, message);
 	}

@@ -19,4 +19,6 @@ public class ReservationProperties {
 
 	@NotNull(message = "Reservation TTL is required")
 	private Duration reservationTtl;
+
+	private boolean allocationEnabled;
 }

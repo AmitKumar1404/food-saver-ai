@@ -2,6 +2,7 @@ package com.foodsaver.entity;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.UUID;
 
 import org.hibernate.annotations.Check;
@@ -183,15 +184,12 @@ public class Reservation {
 	private Instant updatedAt;
 
 	@Column(name = "cancelled_at", columnDefinition = "TIMESTAMP(6)")
-	@Setter
 	private Instant cancelledAt;
 
 	@Column(name = "expired_at", columnDefinition = "TIMESTAMP(6)")
-	@Setter
 	private Instant expiredAt;
 
 	@Column(name = "converted_at", columnDefinition = "TIMESTAMP(6)")
-	@Setter
 	private Instant convertedAt;
 
 	public Reservation(
@@ -214,9 +212,36 @@ public class Reservation {
 		this.unitPrice = unitPrice;
 		this.totalAmount = totalAmount;
 		this.currencyCode = currencyCode;
-		this.expiresAt = expiresAt;
+		this.expiresAt = normalizeTimestamp(expiresAt);
 		this.idempotencyKey = idempotencyKey;
 		this.requestHash = requestHash;
+	}
+
+	public void initializeCreationTimestamp(Instant transactionTime) {
+		if (transactionTime == null || createdAt != null) {
+			throw new IllegalStateException(
+					"Reservation creation timestamp cannot be initialized");
+		}
+		createdAt = normalizeTimestamp(transactionTime);
+		updatedAt = createdAt;
+	}
+
+	public void setCancelledAt(Instant cancelledAt) {
+		this.cancelledAt = normalizeTimestamp(cancelledAt);
+	}
+
+	public void setExpiredAt(Instant expiredAt) {
+		this.expiredAt = normalizeTimestamp(expiredAt);
+	}
+
+	public void setConvertedAt(Instant convertedAt) {
+		this.convertedAt = normalizeTimestamp(convertedAt);
+	}
+
+	public static Instant normalizeTimestamp(Instant timestamp) {
+		return timestamp == null
+				? null
+				: timestamp.truncatedTo(ChronoUnit.MICROS);
 	}
 
 	@PrePersist
@@ -228,15 +253,41 @@ public class Reservation {
 			status = ReservationStatus.ACTIVE;
 		}
 
-		Instant now = Instant.now();
+		Instant now = normalizeTimestamp(Instant.now());
 		if (createdAt == null) {
 			createdAt = now;
+		} else {
+			createdAt = normalizeTimestamp(createdAt);
 		}
-		updatedAt = now;
+		expiresAt = normalizeTimestamp(expiresAt);
+		cancelledAt = normalizeTimestamp(cancelledAt);
+		expiredAt = normalizeTimestamp(expiredAt);
+		convertedAt = normalizeTimestamp(convertedAt);
+		updatedAt = updatedAt == null
+				? createdAt
+				: normalizeTimestamp(updatedAt);
 	}
 
 	@PreUpdate
 	void updateTimestamp() {
-		updatedAt = Instant.now();
+		createdAt = normalizeTimestamp(createdAt);
+		expiresAt = normalizeTimestamp(expiresAt);
+		cancelledAt = normalizeTimestamp(cancelledAt);
+		expiredAt = normalizeTimestamp(expiredAt);
+		convertedAt = normalizeTimestamp(convertedAt);
+		updatedAt = lifecycleTimestamp();
+	}
+
+	private Instant lifecycleTimestamp() {
+		if (status == ReservationStatus.EXPIRED && expiredAt != null) {
+			return expiredAt;
+		}
+		if (status == ReservationStatus.CANCELLED && cancelledAt != null) {
+			return cancelledAt;
+		}
+		if (status == ReservationStatus.CONVERTED && convertedAt != null) {
+			return convertedAt;
+		}
+		return normalizeTimestamp(Instant.now());
 	}
 }

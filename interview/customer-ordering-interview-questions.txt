@@ -25,18 +25,21 @@ Current implementation:
 - Reservation entity and ReservationRepository
 - Reservation real-MySQL persistence tests
 - ReservationCreateRequest and ReservationResponse
-- ReservationService create foundation with server-side pricing, configured
-  TTL, and sequential idempotency behavior
+- ReservationService coordinator and READ_COMMITTED allocation command
+- Canonical pessimistic locks and authoritative Inventory/Reservation ledger
+- Server-side pricing, configured TTL, atomic expiry release, and concurrent
+  idempotency recovery
+- Release-specific durable reconciliation marker and startup activation guard
+- Real-MySQL lock-wait, runtime-isolation, idempotency-race, and rollback tests
 - Reservation service and DTO tests
 - ReservationController create endpoint, required Idempotency-Key validation,
   OpenAPI contract, HTTP exception mappings, and controller tests
 
 Not yet implemented:
 - Customer update, delete, list, or search APIs
-- Reservation GET/cancel APIs, Inventory allocation, pessimistic locking,
-  concurrent idempotency recovery, expiry, and lifecycle workers
+- Reservation GET/cancel APIs and the standalone expiry/lifecycle worker
 - Order or OrderItem persistence and workflows
-- Ordering transactions, expiry processing, or idempotency services
+- Production reconciliation execution and deployment sequencing
 - Kafka, Redis, AI, RAG, payment, authentication, or authorization
 
 
@@ -464,9 +467,10 @@ for allocation and overselling prevention.
 Q50. Does persisting a Reservation entity reserve Inventory?
 
 Expected answer:
-No. This increment implements persistence only. A future transactional
-Reservation service must lock authoritative rows, validate state, and
-atomically move Inventory quantity from available to reserved.
+Persisting an entity directly does not reserve Inventory. The implemented
+allocation command does: while Inventory is locked it atomically moves quantity
+from available to reserved and persists the ACTIVE Reservation in one
+transaction.
 
 
 ============================================================
@@ -516,32 +520,33 @@ UUID, and quantity normalized to database scale 3. Price, current time, expiry,
 and generated UUID are excluded so equivalent retries have the same hash.
 
 
-Q56. What idempotency behavior is implemented in this foundation?
+Q56. What idempotency behavior is implemented?
 
 Expected answer:
-A sequential retry with the same Customer, key, and hash returns the existing
-Reservation. Reusing the key with a different hash throws
-ReservationIdempotencyConflictException. The database unique constraint remains
-the final invariant, but concurrent loser recovery is intentionally deferred.
+A Customer write lock serializes same-Customer requests. The same key and hash
+replays the existing Reservation; a different hash throws
+ReservationIdempotencyConflictException. If the named database unique
+constraint still loses a race, the allocation transaction rolls back before a
+separate read-only transaction verifies and returns the winner.
 
 
-Q57. Why is createReservation transactional even though Inventory is not yet
-mutated?
+Q57. Why is the coordinator separate from the transactional command?
 
 Expected answer:
-Customer/Offer resolution, idempotency lookup, lazy relationship validation,
-snapshot calculation, Reservation persistence, and response mapping form one
-consistent unit. This is not yet the final allocation transaction because it
-has no pessimistic locks or Inventory quantity movement.
+Spring self-invocation would not activate a transactional proxy, and unique
+constraint recovery must occur only after the failed allocation transaction
+has rolled back. A non-transactional coordinator delegates to a separately
+proxied READ_COMMITTED command and then, only for the named idempotency race,
+uses a separate read-only recovery transaction.
 
 
 Q58. Does this service foundation prevent overselling?
 
 Expected answer:
-No. It validates that requested quantity does not exceed the immutable Offer
-quantity, but it does not calculate existing allocation or mutate Inventory.
-Overselling prevention requires the next increment's post-lock checks,
-Inventory available-to-reserved movement, and concurrent idempotency recovery.
+Yes for the implemented V1 allocation path. Inventory is the serialization
+point, Offer capacity is derived from ACTIVE and CONVERTED Reservations, both
+capacity checks happen after canonical locks, and Inventory movement plus
+Reservation persistence commit atomically.
 
 
 Q59. Does Reservation creation introduce new food-safety authority?
@@ -614,6 +619,8 @@ Central handling keeps ErrorResponse consistent and prevents repetitive
 try/catch blocks in controllers. CustomerNotFoundException and
 OfferNotFoundException map to 404, while ReservationValidationException and
 ReservationIdempotencyConflictException map to 409.
+ReservationAllocationConflictException also maps to 409 without exposing
+internal database IDs, quantities, lock diagnostics, or SQL details.
 
 
 Q67. What is the difference between 400, 404, and 409 for this endpoint?
@@ -630,25 +637,211 @@ Q68. Why is controller validation insufficient for concurrency correctness?
 Expected answer:
 Bean Validation and header checks inspect one request only. They cannot
 serialize competing transactions, calculate authoritative aggregate
-allocation, or recover a database uniqueness race. Those controls belong in
-the future lock-based allocation transaction.
+allocation, or recover a database uniqueness race. Those controls are
+implemented in the lock-based allocation command.
 
 
 Q69. Does the create endpoint reserve Inventory quantity today?
 
 Expected answer:
-No. The controller delegates to the current service foundation, which persists
-the Reservation snapshot without moving Inventory available quantity to
-reserved quantity. This limitation is explicit until the concurrency-safe
-allocation transaction is implemented.
+Yes, when foodsaver.ordering.allocation-enabled is explicitly true after data
+reconciliation. Successful creation moves available quantity to reserved in
+the same transaction as the Reservation insert. Production defaults the gate
+to false.
 
 
 Q70. How does the controller contract support future concurrency-safe
 allocation?
 
 Expected answer:
-It already passes the Customer public UUID, validated Offer/quantity request,
-and idempotency key through one stable service boundary. The future service
-implementation can add deterministic locks, post-lock validation, atomic
-Inventory movement, and concurrent retry recovery without moving those rules
-into the controller or changing the request DTO.
+It passes Customer public UUID, validated Offer/quantity request, and
+idempotency key through one stable boundary. The allocation implementation
+added deterministic locks, post-lock validation, atomic Inventory movement,
+and concurrent retry recovery without changing the controller or request DTO.
+
+
+============================================================
+8. CONCURRENCY-SAFE RESERVATION ALLOCATION
+============================================================
+
+Q71. What is the canonical allocation lock order?
+
+Expected answer:
+Customer, Restaurant, Product, Inventory, Offers ordered by internal ID, then
+ACTIVE Reservations ordered by internal ID. Customer, Inventory, Offers, and
+Reservations use pessimistic write locks. Restaurant and Product use
+pessimistic read locks. No supported workflow may reverse this order.
+
+
+Q72. Why does the allocation transaction use READ_COMMITTED?
+
+Expected answer:
+MySQL REPEATABLE_READ can retain an aggregate snapshot established before a
+lock wait. READ_COMMITTED ensures post-Inventory-lock SUM queries see the
+latest committed Reservation ledger. The Inventory row remains the
+serialization point; aggregate queries validate state rather than provide
+locking.
+
+
+Q73. Which two quantity invariants are authoritative?
+
+Expected answer:
+For the locked Inventory, prepared must equal available plus reserved plus
+sold, and reserved must equal the sum of ACTIVE and CONVERTED Reservation
+quantity for that Inventory. A mismatch fails closed before mutation and is
+checked again after expiry release and final persistence.
+
+
+Q74. How are expired ACTIVE Reservations handled during creation?
+
+Expected answer:
+After all locks, the command captures one transaction time. Every locked ACTIVE
+Reservation with expiresAt less than or equal to that time moves to EXPIRED,
+sets expiredAt, and releases reserved quantity to available. The changes are
+in the same transaction as the new allocation, so a later failure rolls all of
+them back.
+
+
+Q75. How is Offer remaining quantity calculated?
+
+Expected answer:
+Offer has no mutable remaining counter. Allocation is the SUM of Reservation
+quantity for that Offer in ACTIVE or CONVERTED status. Remaining quantity is
+offeredQuantity minus that sum, and the request must fit both the Offer
+remainder and current Inventory available quantity.
+
+
+Q76. Why is allocation disabled by default?
+
+Expected answer:
+Foundation-era ACTIVE Reservations were persisted without Inventory movement,
+so they cannot be assumed to own reserved quantity. Production uses
+foodsaver.ordering.allocation-enabled=false until writes are quiesced, legacy
+rows are explicitly classified, Inventory is reconciled, and a durable
+release-specific reconciliation marker is recorded. Tests enable the property
+explicitly against clean data.
+
+
+Q77. Why is Reservation cancellation still deferred?
+
+Expected answer:
+Cancellation may release quantity only for a Reservation proven to own an
+Inventory hold. New allocation-backed Reservations satisfy that condition, but
+the cancellation workflow still needs the same lock order, state revalidation,
+and exactly-once release implementation. No cancellation API is implemented in
+this increment.
+
+
+Q78. Does allocation add food-safety authority?
+
+Expected answer:
+No. Allocation consumes an existing locked Offer whose immutable evaluation
+lineage remains ELIGIBLE_FOR_OFFER. It does not create SAFE, UNSAFE,
+CERTIFIED, or APPROVED_FOR_SALE states and does not invoke AI or RAG.
+
+
+Q79. Why is a balanced Reservation ledger insufficient to activate allocation?
+
+Expected answer:
+Legacy foundation Reservations did not necessarily allocate Inventory. Their
+quantities can coincidentally equal reservedQuantity, so quantity equality
+cannot prove allocation backing. Allocation requires the exact durable
+RESERVATION_ALLOCATION_V1 reconciliation marker in addition to valid
+Inventory and Reservation-ledger equations.
+
+
+Q80. What does the reconciliation marker lifecycle prove?
+
+Expected answer:
+RECONCILED_BASELINE records that the release-specific operational
+reconciliation reached a clean baseline: no legacy ACTIVE or CONVERTED rows
+and zero Inventory reserved quantity. Startup validates that baseline and
+atomically changes the marker to ACTIVATED. Later restarts require the same
+release marker and revalidate current ledgers; a generic boolean cannot
+authorize a future incompatible release.
+
+
+Q81. Can allocation traffic run while startup preflight is incomplete?
+
+Expected answer:
+No. The in-process activation guard starts closed and becomes active only
+after the marker transition and preflight transaction commit. The public
+coordinator checks the guard before opening the allocation transaction.
+Missing, invalid, or wrong-release markers fail startup and leave the guard
+closed.
+
+
+Q82. Has production reconciliation been performed by this implementation?
+
+Expected answer:
+No. The durable marker schema, validation, and gate are implemented, but
+production must still quiesce writes, establish a cutoff, classify old ACTIVE
+rows, reject unresolved CONVERTED rows, require zero reserved quantity, record
+the exact marker, and sequence deployment before enabling allocation. The
+application never infers legacy backing from quantities.
+
+
+Q83. What happens when an idempotent replay finds an ACTIVE row whose expiry
+has passed?
+
+Expected answer:
+It enters the same canonical allocation transaction and lock order as a new
+request. After validating the locked Inventory and Reservation ledger, it
+releases the hold once, changes the Reservation to EXPIRED, and returns the
+terminal representation. It never returns stale ACTIVE state or releases
+outside the Inventory transaction.
+
+
+Q84. Why are createdAt and expiresAt based on one post-lock timestamp?
+
+Expected answer:
+The authoritative time is captured only after all canonical locks. The command
+normalizes it to MySQL TIMESTAMP(6) microsecond precision, sets createdAt
+explicitly to that value, and normalizes expiresAt after choosing the earlier
+of transactionTime plus TTL and Offer expiry. If the persisted-precision
+expiresAt is not strictly after createdAt, allocation fails before any expiry
+release, Inventory mutation, or Reservation insert. Creation, update, and
+lifecycle timestamps use the same precision so API responses match database
+reloads exactly.
+
+
+Q85. How is runtime READ_COMMITTED behavior tested?
+
+Expected answer:
+Real-MySQL tests inspect @@transaction_isolation inside the allocation
+transaction. Independent connections are coordinated with latches and database
+lock-wait observation so one transaction waits for Inventory, then proves its
+post-lock aggregate sees the first transaction's committed ledger change.
+
+
+Q86. How is the database idempotency race tested if the normal Customer lock
+serializes requests?
+
+Expected answer:
+A focused integration setup holds Inventory while the normal allocation owns
+the Customer lock, inserts a competing winner through an independent database
+transaction, and lets saveAndFlush lose on the real
+uk_reservations_customer_idempotency constraint. The losing allocation rolls
+back, a separate read-only transaction verifies the winner and hash, and the
+request re-enters the canonical command for expiry-safe replay. Production
+locking is not weakened to manufacture the race.
+
+
+Q87. Which rollback guarantees are proven against MySQL?
+
+Expected answer:
+Controlled test-only observer failures occur after expiry flush and after new
+Reservation persistence but before commit. The tests verify Inventory changes,
+Reservation insertion, and expiry transitions all roll back and that the final
+Inventory and Reservation-ledger invariants remain unchanged.
+
+
+Q88. How does restart preflight avoid a mixed Inventory/Reservation snapshot?
+
+Expected answer:
+It uses a preflight-only REPEATABLE_READ transaction. The Inventory read
+establishes a consistent non-locking snapshot, and one grouped Reservation
+aggregate query reads from that same snapshot. A concurrent runtime allocation
+can commit without being globally blocked, while preflight still sees either
+the complete pre-commit or complete post-commit ledger. Runtime allocation
+continues to use READ_COMMITTED.
