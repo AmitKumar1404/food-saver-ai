@@ -5,11 +5,11 @@
 This document defines the production-level architecture and database design for
 Customer Ordering V1.
 
-The first incremental persistence step implements `CustomerStatus`, the
-`Customer` entity, `CustomerRepository`, and focused persistence tests.
-Reservation, Order, OrderItem, services, controllers, DTOs, exceptions,
-migrations, schedulers, security rules, Kafka integration, Redis integration,
-and AI integration remain unimplemented.
+The completed Customer increments implement `CustomerStatus`, the `Customer`
+entity, `CustomerRepository`, `CustomerCreateRequest`, `CustomerResponse`, and
+focused persistence and DTO-validation tests. Reservation, Order, OrderItem,
+services, controllers, exceptions, migrations, schedulers, security rules,
+Kafka integration, Redis integration, and AI integration remain unimplemented.
 
 The proposed flow extends the implemented FoodSaver domain:
 
@@ -1238,12 +1238,30 @@ Create request fields:
 - `displayName`
 - optional `contactPhone`
 
-Create response:
+The implemented `CustomerCreateRequest` validation contract is:
 
-- Customer public UUID;
-- profile fields;
-- status; and
-- audit timestamps.
+- `email`: required, non-blank, valid email format, and at most 254
+  characters;
+- `displayName`: required, non-blank, and at most 100 characters; and
+- `contactPhone`: optional and at most 32 characters, with no invented
+  country-specific format rule.
+
+The DTO preserves the submitted email value. Canonical lowercase conversion
+remains a service/domain persistence responsibility.
+
+The implemented `CustomerResponse` exposes:
+
+- `publicId`;
+- `email`;
+- `displayName`;
+- `contactPhone`;
+- `status`;
+- `createdAt`; and
+- `updatedAt`.
+
+It does not expose the internal database ID or optimistic-lock version.
+The `POST /api/v1/customers` controller and creation service remain future
+increments.
 
 ### 26.2 Reservation
 
@@ -1546,15 +1564,16 @@ Implementation must remain incremental and requires explicit approval.
 Incremental steps:
 
 1. CustomerStatus and Customer persistence design implementation. (Completed)
-2. ReservationStatus, Reservation entity, constraints, and repositories.
-3. Reservation transactional allocation service and API.
-4. Reservation cancellation and expiry service.
-5. OrderStatus, Order, and OrderItem persistence.
-6. Order creation from Reservations.
-7. Order completion and cancellation.
-8. Global exception mappings and OpenAPI.
-9. Unit, controller, and real-MySQL integration tests.
-10. Customer Ordering interview material.
+2. Customer request/response DTO and validation contract. (Completed)
+3. ReservationStatus, Reservation entity, constraints, and repositories.
+4. Reservation transactional allocation service and API.
+5. Reservation cancellation and expiry service.
+6. OrderStatus, Order, and OrderItem persistence.
+7. Order creation from Reservations.
+8. Order completion and cancellation.
+9. Global exception mappings and OpenAPI.
+10. Unit, controller, and real-MySQL integration tests.
+11. Continue Customer Ordering interview material for each increment.
 
 No implementation step should combine all layers without review.
 
@@ -1581,12 +1600,19 @@ Implemented persistence coverage verifies:
 - nullable contact phone; and
 - database rejection of email values that collide after canonicalization.
 
+Implemented DTO-validation coverage verifies:
+
+- valid request acceptance without DTO-side email lowercasing;
+- missing, blank, malformed, and overlength email rejection;
+- missing, blank, and overlength display-name rejection;
+- optional contact phone and its maximum length; and
+- response exclusion of internal ID and optimistic-lock version.
+
 Future service and API coverage must verify:
 
 - successful Customer creation;
-- invalid email and missing fields;
 - suspended and closed Customer behavior; and
-- internal ID/version exclusion from the API contract.
+- validation errors use the centralized HTTP `400` `ErrorResponse` contract.
 
 ### 36.3 Reservation service and API tests
 
