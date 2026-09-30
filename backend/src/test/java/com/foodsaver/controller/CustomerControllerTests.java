@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -30,6 +31,7 @@ import com.foodsaver.dto.request.CustomerCreateRequest;
 import com.foodsaver.dto.response.CustomerResponse;
 import com.foodsaver.enums.CustomerStatus;
 import com.foodsaver.exception.CustomerAlreadyExistsException;
+import com.foodsaver.exception.CustomerNotFoundException;
 import com.foodsaver.exception.ErrorResponse;
 import com.foodsaver.exception.GlobalExceptionHandler;
 import com.foodsaver.service.CustomerService;
@@ -82,6 +84,56 @@ class CustomerControllerTests {
 		assertEquals("Customer.Name@Example.COM", delegatedRequest.getEmail());
 		assertEquals("Customer Name", delegatedRequest.getDisplayName());
 		assertEquals("+14155552671", delegatedRequest.getContactPhone());
+	}
+
+	@Test
+	void getsCustomerByPublicIdAndDelegatesToService() throws Exception {
+		when(customerService.getCustomer(CUSTOMER_PUBLIC_ID))
+				.thenReturn(response("+14155552671"));
+
+		mockMvc.perform(get(ENDPOINT + "/{customerPublicId}", CUSTOMER_PUBLIC_ID))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.publicId").value(CUSTOMER_PUBLIC_ID.toString()))
+				.andExpect(jsonPath("$.email").value("customer.name@example.com"))
+				.andExpect(jsonPath("$.displayName").value("Customer Name"))
+				.andExpect(jsonPath("$.contactPhone").value("+14155552671"))
+				.andExpect(jsonPath("$.status").value("ACTIVE"))
+				.andExpect(jsonPath("$.createdAt").value(CREATED_AT.toString()))
+				.andExpect(jsonPath("$.updatedAt").value(UPDATED_AT.toString()))
+				.andExpect(jsonPath("$.id").doesNotExist())
+				.andExpect(jsonPath("$.version").doesNotExist());
+
+		verify(customerService).getCustomer(CUSTOMER_PUBLIC_ID);
+	}
+
+	@Test
+	void returnsNotFoundWhenCustomerDoesNotExist() throws Exception {
+		CustomerNotFoundException exception =
+				new CustomerNotFoundException(CUSTOMER_PUBLIC_ID);
+		when(customerService.getCustomer(CUSTOMER_PUBLIC_ID)).thenThrow(exception);
+
+		mockMvc.perform(get(ENDPOINT + "/{customerPublicId}", CUSTOMER_PUBLIC_ID))
+				.andExpect(status().isNotFound())
+				.andExpect(jsonPath("$.status").value(404))
+				.andExpect(jsonPath("$.message").value(exception.getMessage()))
+				.andExpect(jsonPath("$.path")
+						.value(ENDPOINT + "/" + CUSTOMER_PUBLIC_ID))
+				.andExpect(jsonPath("$.errors").isEmpty())
+				.andExpect(jsonPath("$.error").doesNotExist());
+	}
+
+	@Test
+	void returnsBadRequestForInvalidCustomerPublicId() throws Exception {
+		mockMvc.perform(get(ENDPOINT + "/{customerPublicId}", "not-a-uuid"))
+				.andExpect(status().isBadRequest())
+				.andExpect(jsonPath("$.status").value(400))
+				.andExpect(jsonPath("$.message").value("Invalid path parameter"))
+				.andExpect(jsonPath("$.path").value(ENDPOINT + "/not-a-uuid"))
+				.andExpect(jsonPath("$.errors.customerPublicId[0]")
+						.value("Must be a valid UUID"))
+				.andExpect(jsonPath("$.error").doesNotExist());
+
+		verifyNoInteractions(customerService);
 	}
 
 	@Test
@@ -259,6 +311,17 @@ class CustomerControllerTests {
 		assertResponseSchema(responses, "201", CustomerResponse.class);
 		assertResponseSchema(responses, "400", ErrorResponse.class);
 		assertResponseSchema(responses, "409", ErrorResponse.class);
+	}
+
+	@Test
+	void documentsCustomerGetResponses() throws Exception {
+		ApiResponses responses = CustomerController.class
+				.getMethod("getCustomer", UUID.class)
+				.getAnnotation(ApiResponses.class);
+
+		assertResponseSchema(responses, "200", CustomerResponse.class);
+		assertResponseSchema(responses, "400", ErrorResponse.class);
+		assertResponseSchema(responses, "404", ErrorResponse.class);
 	}
 
 	private void assertValidationError(

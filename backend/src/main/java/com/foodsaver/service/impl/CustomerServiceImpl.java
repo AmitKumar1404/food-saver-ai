@@ -1,5 +1,7 @@
 package com.foodsaver.service.impl;
 
+import java.util.UUID;
+
 import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
@@ -10,6 +12,7 @@ import com.foodsaver.dto.response.CustomerResponse;
 import com.foodsaver.entity.Customer;
 import com.foodsaver.enums.CustomerStatus;
 import com.foodsaver.exception.CustomerAlreadyExistsException;
+import com.foodsaver.exception.CustomerNotFoundException;
 import com.foodsaver.repository.CustomerRepository;
 import com.foodsaver.service.CustomerService;
 
@@ -41,6 +44,14 @@ public class CustomerServiceImpl implements CustomerService {
 		customer.setStatus(CustomerStatus.ACTIVE);
 
 		return toResponse(saveCustomer(customer));
+	}
+
+	@Override
+	@Transactional(readOnly = true)
+	public CustomerResponse getCustomer(UUID customerPublicId) {
+		return customerRepository.findByPublicId(customerPublicId)
+				.map(this::toResponse)
+				.orElseThrow(() -> new CustomerNotFoundException(customerPublicId));
 	}
 
 	Customer saveCustomer(Customer customer) {

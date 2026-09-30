@@ -15,13 +15,15 @@ Current implementation:
 - Customer DTO validation tests
 - CustomerService and CustomerServiceImpl
 - CustomerAlreadyExistsException
+- CustomerNotFoundException
 - Customer service integration and persistence-translation tests
-- CustomerController create endpoint
+- CustomerController create and get-by-public-ID endpoints
 - CustomerAlreadyExistsException HTTP 409 mapping
-- Customer create OpenAPI contract and controller tests
+- CustomerNotFoundException HTTP 404 mapping
+- Customer create/get OpenAPI contracts and controller tests
 
 Not yet implemented:
-- Customer GET, update, delete, or list APIs
+- Customer update, delete, list, or search APIs
 - Reservation, Order, or OrderItem persistence and workflows
 - Ordering transactions, expiry processing, or idempotency services
 - Kafka, Redis, AI, RAG, payment, authentication, or authorization
@@ -203,13 +205,13 @@ No. A UUID is a public identifier, not a credential. Authentication and
 authorization remain a future concern.
 
 
-Q20. Why does Customer expose only a create endpoint?
+Q20. Why does Customer expose only create and get-by-public-ID endpoints?
 
 Expected answer:
 The project is implemented incrementally. The persistence model, DTO contract,
 transactional creation service, and POST /api/v1/customers endpoint are
-complete. Customer GET, update, delete, and list operations require separate
-reviewed steps.
+complete, together with GET /api/v1/customers/{customerPublicId}. Customer
+update, delete, list, and search operations require separate reviewed steps.
 
 
 Q21. Is the configured Reservation TTL part of the Customer entity?
@@ -334,3 +336,40 @@ Expected answer:
 It documents CustomerResponse for HTTP 201 and ErrorResponse for HTTP 400
 validation or malformed-body failures and HTTP 409 canonical-email conflicts.
 The schemas do not expose internal Customer ID or version.
+
+
+Q36. How is one Customer retrieved?
+
+Expected answer:
+GET /api/v1/customers/{customerPublicId} accepts the external Customer UUID,
+delegates to CustomerService, and returns CustomerResponse with HTTP 200.
+
+
+Q37. Does Customer lookup use the internal database ID?
+
+Expected answer:
+No. CustomerServiceImpl calls CustomerRepository.findByPublicId with the UUID.
+The internal BIGINT ID is neither accepted by the endpoint nor exposed in the
+response.
+
+
+Q38. What happens when a Customer public UUID does not exist?
+
+Expected answer:
+CustomerServiceImpl throws CustomerNotFoundException. GlobalExceptionHandler
+maps it to HTTP 404 with the existing ErrorResponse structure.
+
+
+Q39. What happens when customerPublicId is not a valid UUID?
+
+Expected answer:
+Spring cannot convert the path parameter to UUID, so the existing
+MethodArgumentTypeMismatchException handler returns HTTP 400 with an
+"Invalid path parameter" ErrorResponse. CustomerService is not invoked.
+
+
+Q40. What does the Customer GET OpenAPI operation document?
+
+Expected answer:
+It documents CustomerResponse for HTTP 200 and ErrorResponse for HTTP 400
+invalid UUID and HTTP 404 missing Customer responses.

@@ -90,6 +90,24 @@ class CustomerServiceIntegrationTests {
 		assertNull(response.getContactPhone());
 	}
 
+	@Test
+	void retrievesCustomerByPublicId() {
+		CustomerResponse created = customerService.createCustomer(request(
+				"lookup." + UUID.randomUUID() + "@example.com",
+				"Lookup Customer",
+				"+14155552671"));
+
+		CustomerResponse retrieved = customerService.getCustomer(created.getPublicId());
+
+		assertEquals(created.getPublicId(), retrieved.getPublicId());
+		assertEquals(created.getEmail(), retrieved.getEmail());
+		assertEquals(created.getDisplayName(), retrieved.getDisplayName());
+		assertEquals(created.getContactPhone(), retrieved.getContactPhone());
+		assertEquals(CustomerStatus.ACTIVE, retrieved.getStatus());
+		assertEquals(created.getCreatedAt(), retrieved.getCreatedAt());
+		assertEquals(created.getUpdatedAt(), retrieved.getUpdatedAt());
+	}
+
 	private CustomerCreateRequest request(
 			String email,
 			String displayName,

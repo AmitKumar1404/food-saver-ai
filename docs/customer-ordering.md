@@ -1235,11 +1235,6 @@ Implemented:
 
 ```http
 POST /api/v1/customers
-```
-
-Designed but not implemented:
-
-```http
 GET  /api/v1/customers/{customerPublicId}
 ```
 
@@ -1302,6 +1297,24 @@ Customer creation uses the existing `ErrorResponse` contract:
 The OpenAPI operation documents `CustomerResponse` for `201` and
 `ErrorResponse` for `400` and `409`. Internal ID and version are absent from
 both Customer DTO schemas.
+
+`GET /api/v1/customers/{customerPublicId}` retrieves one Customer by external
+public UUID. The controller accepts `customerPublicId` as `UUID` and delegates
+to the read-only transactional service, which queries
+`CustomerRepository.findByPublicId`; internal database IDs are not accepted or
+exposed.
+
+The GET endpoint returns:
+
+- `200 OK` with the approved `CustomerResponse` fields when found;
+- `400 Bad Request` with the existing invalid-path-parameter `ErrorResponse`
+  when `customerPublicId` is not a valid UUID; and
+- `404 Not Found` with `ErrorResponse` when `CustomerNotFoundException`
+  reports no Customer for the public UUID.
+
+Its OpenAPI operation documents `CustomerResponse` for `200` and
+`ErrorResponse` for `400` and `404`. Customer update, delete, list, and search
+APIs remain unimplemented.
 
 ### 26.2 Reservation
 

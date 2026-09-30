@@ -3,7 +3,11 @@ package com.foodsaver.service.impl;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+
+import java.util.Optional;
+import java.util.UUID;
 
 import org.hibernate.exception.ConstraintViolationException;
 import org.junit.jupiter.api.BeforeEach;
@@ -15,6 +19,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 
 import com.foodsaver.entity.Customer;
 import com.foodsaver.exception.CustomerAlreadyExistsException;
+import com.foodsaver.exception.CustomerNotFoundException;
 import com.foodsaver.repository.CustomerRepository;
 
 @ExtendWith(MockitoExtension.class)
@@ -56,6 +61,19 @@ class CustomerServiceImplPersistenceTests {
 				() -> customerService.saveCustomer(customer));
 
 		assertSame(persistenceException, propagated);
+	}
+
+	@Test
+	void throwsNotFoundWhenPublicIdDoesNotExist() {
+		UUID customerPublicId = UUID.randomUUID();
+		when(customerRepository.findByPublicId(customerPublicId))
+				.thenReturn(Optional.empty());
+
+		assertThrows(
+				CustomerNotFoundException.class,
+				() -> customerService.getCustomer(customerPublicId));
+
+		verify(customerRepository).findByPublicId(customerPublicId);
 	}
 
 	private DataIntegrityViolationException constraintViolation(
