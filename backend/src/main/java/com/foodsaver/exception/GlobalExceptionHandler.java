@@ -168,6 +168,20 @@ public class GlobalExceptionHandler {
 		return ResponseEntity.status(HttpStatus.CONFLICT).body(response);
 	}
 
+	@ExceptionHandler(CustomerAlreadyExistsException.class)
+	public ResponseEntity<ErrorResponse> handleCustomerAlreadyExistsException(
+			CustomerAlreadyExistsException exception,
+			HttpServletRequest request) {
+		ErrorResponse response = new ErrorResponse(
+				Instant.now(),
+				HttpStatus.CONFLICT.value(),
+				exception.getMessage(),
+				request.getRequestURI(),
+				Map.of());
+
+		return ResponseEntity.status(HttpStatus.CONFLICT).body(response);
+	}
+
 	@ExceptionHandler(FoodEligibilityEvaluationNotFoundException.class)
 	public ResponseEntity<ErrorResponse> handleFoodEligibilityEvaluationNotFoundException(
 			FoodEligibilityEvaluationNotFoundException exception,

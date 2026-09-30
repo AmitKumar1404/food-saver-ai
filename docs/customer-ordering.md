@@ -8,10 +8,12 @@ Customer Ordering V1.
 The completed Customer increments implement `CustomerStatus`, the `Customer`
 entity, `CustomerRepository`, `CustomerCreateRequest`, `CustomerResponse`, and
 the transactional Customer creation service with focused persistence,
-DTO-validation, service, and duplicate-constraint translation tests.
-Reservation, Order, OrderItem, controllers, HTTP exception mappings,
-migrations, schedulers, security rules, Kafka integration, Redis integration,
-and AI integration remain unimplemented.
+DTO-validation, service, controller, and duplicate-constraint translation
+tests. `POST /api/v1/customers`, its OpenAPI contract, and the Customer
+duplicate HTTP mapping are implemented. Reservation, Order, OrderItem,
+remaining controllers and HTTP mappings, migrations, schedulers, security
+rules, Kafka integration, Redis integration, and AI integration remain
+unimplemented.
 
 The proposed flow extends the implemented FoodSaver domain:
 
@@ -1229,8 +1231,15 @@ The proposed API uses public UUIDs only.
 
 ### 26.1 Customer
 
+Implemented:
+
 ```http
 POST /api/v1/customers
+```
+
+Designed but not implemented:
+
+```http
 GET  /api/v1/customers/{customerPublicId}
 ```
 
@@ -1279,8 +1288,20 @@ that constraint is translated from `DataIntegrityViolationException` to
 The exception leaves the transactional method, so the failed transaction is
 rolled back rather than continued after a failed flush.
 
-The `POST /api/v1/customers` controller and HTTP `409` exception mapping remain
-future increments.
+`CustomerController` applies `@Valid` at the HTTP boundary and delegates
+directly to `CustomerService`; it does not canonicalize email, query a
+repository, or perform duplicate checks. Successful creation returns
+`201 Created`.
+
+Customer creation uses the existing `ErrorResponse` contract:
+
+- `400 Bad Request` for Bean Validation failures or malformed JSON;
+- `409 Conflict` when `CustomerAlreadyExistsException` reports an existing
+  canonical email.
+
+The OpenAPI operation documents `CustomerResponse` for `201` and
+`ErrorResponse` for `400` and `409`. Internal ID and version are absent from
+both Customer DTO schemas.
 
 ### 26.2 Reservation
 
@@ -1361,6 +1382,7 @@ All errors use the existing `ErrorResponse`.
 
 ### 27.3 `409 Conflict`
 
+- A Customer canonical email already exists.
 - Customer is suspended or closed.
 - Offer is inactive, closed, sold out, or expired.
 - Restaurant, Product, or Inventory lifecycle blocks allocation.
@@ -1585,7 +1607,7 @@ Incremental steps:
 1. CustomerStatus and Customer persistence design implementation. (Completed)
 2. Customer request/response DTO and validation contract. (Completed)
 3. Customer transactional creation service and duplicate handling. (Completed)
-4. Customer controller, HTTP exception mapping, and OpenAPI.
+4. Customer controller, HTTP exception mapping, and OpenAPI. (Completed)
 5. ReservationStatus, Reservation entity, constraints, and repositories.
 6. Reservation transactional allocation service and API.
 7. Reservation cancellation and expiry service.
@@ -1638,6 +1660,18 @@ Implemented service coverage verifies:
 - exact and mixed-case duplicate feedback through the application pre-check;
 - translation of only the named email unique constraint; and
 - propagation of unrelated database integrity failures.
+
+Implemented controller coverage verifies:
+
+- `POST /api/v1/customers` returns `201` and delegates to `CustomerService`;
+- all Customer request validation constraints return the centralized `400`
+  validation response;
+- malformed JSON retains the centralized `Malformed request body` response;
+- duplicate canonical email maps to the centralized `409` response;
+- optional contact phone;
+- client-supplied server-controlled properties cannot influence the response;
+- internal ID and version are not exposed; and
+- OpenAPI response schemas for `201`, `400`, and `409`.
 
 Future service and API coverage must verify:
 

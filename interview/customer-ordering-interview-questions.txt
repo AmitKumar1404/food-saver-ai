@@ -16,9 +16,12 @@ Current implementation:
 - CustomerService and CustomerServiceImpl
 - CustomerAlreadyExistsException
 - Customer service integration and persistence-translation tests
+- CustomerController create endpoint
+- CustomerAlreadyExistsException HTTP 409 mapping
+- Customer create OpenAPI contract and controller tests
 
 Not yet implemented:
-- Customer API or HTTP exception mappings
+- Customer GET, update, delete, or list APIs
 - Reservation, Order, or OrderItem persistence and workflows
 - Ordering transactions, expiry processing, or idempotency services
 - Kafka, Redis, AI, RAG, payment, authentication, or authorization
@@ -126,7 +129,7 @@ Expected answer:
 No. Concurrent transactions may both pass a pre-check. The named database
 unique constraint remains the final integrity defense. CustomerServiceImpl
 translates only the named email constraint without hiding unrelated database
-failures. A future HTTP exception mapping will expose the controlled conflict.
+failures. GlobalExceptionHandler exposes the controlled conflict as HTTP 409.
 
 
 Q13. Why is contact_phone nullable and not unique?
@@ -200,12 +203,13 @@ No. A UUID is a public identifier, not a credential. Authentication and
 authorization remain a future concern.
 
 
-Q20. Why does Customer have a service and DTOs but no endpoint yet?
+Q20. Why does Customer expose only a create endpoint?
 
 Expected answer:
 The project is implemented incrementally. The persistence model, DTO contract,
-and transactional creation service are complete, while the HTTP controller
-and exception mapping require a separate reviewed step.
+transactional creation service, and POST /api/v1/customers endpoint are
+complete. Customer GET, update, delete, and list operations require separate
+reviewed steps.
 
 
 Q21. Is the configured Reservation TTL part of the Customer entity?
@@ -284,3 +288,49 @@ Expected answer:
 CustomerAlreadyExistsException leaves the transactional service method. The
 transaction interceptor rolls the transaction back; the service does not catch
 the failure and continue using a transaction marked rollback-only.
+
+
+Q30. What is the Customer creation endpoint and success status?
+
+Expected answer:
+POST /api/v1/customers accepts CustomerCreateRequest and returns
+CustomerResponse with HTTP 201 Created.
+
+
+Q31. Where does Customer request validation run?
+
+Expected answer:
+CustomerController uses @Valid on the request body. Bean Validation failures
+are handled by GlobalExceptionHandler and returned as the existing HTTP 400
+ErrorResponse structure. The controller does not repeat DTO validation.
+
+
+Q32. Does CustomerController canonicalize email or check duplicates?
+
+Expected answer:
+No. It delegates the validated request to CustomerService. Canonicalization,
+duplicate checks, transaction management, and persistence belong to the
+service layer.
+
+
+Q33. How is a duplicate canonical email represented over HTTP?
+
+Expected answer:
+CustomerAlreadyExistsException is handled centrally as HTTP 409 Conflict using
+ErrorResponse. The controller does not catch the exception.
+
+
+Q34. How are malformed Customer request bodies handled?
+
+Expected answer:
+The existing HttpMessageNotReadableException handler returns HTTP 400 with the
+message "Malformed request body", the request path, and no internal exception
+details.
+
+
+Q35. What does the Customer create OpenAPI operation document?
+
+Expected answer:
+It documents CustomerResponse for HTTP 201 and ErrorResponse for HTTP 400
+validation or malformed-body failures and HTTP 409 canonical-email conflicts.
+The schemas do not expose internal Customer ID or version.
