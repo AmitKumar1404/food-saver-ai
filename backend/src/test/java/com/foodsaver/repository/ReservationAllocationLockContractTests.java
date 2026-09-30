@@ -38,6 +38,20 @@ class ReservationAllocationLockContractTests {
 	}
 
 	@Test
+	void orderConversionCommandUsesReadCommittedIsolation() throws Exception {
+		Transactional transactional = OrderConversionCommand.class
+				.getDeclaredMethod(
+						"convert",
+						Class.forName(
+								"com.foodsaver.service.impl."
+										+ "OrderConversionCommand"
+										+ "$OrderConversionRequest"))
+				.getAnnotation(Transactional.class);
+
+		assertEquals(Isolation.READ_COMMITTED, transactional.isolation());
+	}
+
+	@Test
 	void repositoriesDeclareFinalizedAllocationLockModes() throws Exception {
 		assertLock(
 				CustomerRepository.class,

@@ -14,6 +14,7 @@ import org.springframework.data.repository.query.Param;
 import com.foodsaver.entity.Reservation;
 import com.foodsaver.enums.ReservationStatus;
 import com.foodsaver.repository.projection.InventoryReservationLedgerTotal;
+import com.foodsaver.repository.projection.OrderConversionTarget;
 import com.foodsaver.repository.projection.ReservationAllocationTarget;
 
 import jakarta.persistence.LockModeType;
@@ -33,6 +34,22 @@ public interface ReservationRepository extends JpaRepository<Reservation, Long> 
 	Optional<Reservation> findByCustomerPublicIdAndIdempotencyKey(
 			UUID customerPublicId,
 			String idempotencyKey);
+
+	@Query("""
+			select new com.foodsaver.repository.projection.OrderConversionTarget(
+				reservation.id,
+				reservation.customer.id,
+				reservation.restaurant.id,
+				reservation.offer.product.id,
+				reservation.inventory.id,
+				reservation.offer.id)
+			from Reservation reservation
+			where reservation.publicId = :reservationPublicId
+			  and reservation.customer.id = :customerId
+			""")
+	Optional<OrderConversionTarget> findOrderConversionTarget(
+			@Param("reservationPublicId") UUID reservationPublicId,
+			@Param("customerId") Long customerId);
 
 	@Query("""
 			select new com.foodsaver.repository.projection.ReservationAllocationTarget(

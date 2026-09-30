@@ -238,6 +238,23 @@ public class GlobalExceptionHandler {
 		return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
 	}
 
+	@ExceptionHandler({
+			OrderNotFoundException.class,
+			ReservationNotFoundException.class
+	})
+	public ResponseEntity<ErrorResponse> handleOrderingNotFound(
+			RuntimeException exception,
+			HttpServletRequest request) {
+		ErrorResponse response = new ErrorResponse(
+				Instant.now(),
+				HttpStatus.NOT_FOUND.value(),
+				exception.getMessage(),
+				request.getRequestURI(),
+				Map.of());
+
+		return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
+	}
+
 	@ExceptionHandler(OfferEligibilityException.class)
 	public ResponseEntity<ErrorResponse> handleOfferEligibilityException(
 			OfferEligibilityException exception,
@@ -269,7 +286,9 @@ public class GlobalExceptionHandler {
 	@ExceptionHandler({
 			ReservationValidationException.class,
 			ReservationIdempotencyConflictException.class,
-			ReservationAllocationConflictException.class
+			ReservationAllocationConflictException.class,
+			OrderIdempotencyConflictException.class,
+			OrderConversionConflictException.class
 	})
 	public ResponseEntity<ErrorResponse> handleReservationConflict(
 			RuntimeException exception,
@@ -282,6 +301,20 @@ public class GlobalExceptionHandler {
 				Map.of());
 
 		return ResponseEntity.status(HttpStatus.CONFLICT).body(response);
+	}
+
+	@ExceptionHandler(OrderValidationException.class)
+	public ResponseEntity<ErrorResponse> handleOrderValidation(
+			OrderValidationException exception,
+			HttpServletRequest request) {
+		ErrorResponse response = new ErrorResponse(
+				Instant.now(),
+				HttpStatus.BAD_REQUEST.value(),
+				exception.getMessage(),
+				request.getRequestURI(),
+				Map.of());
+
+		return ResponseEntity.badRequest().body(response);
 	}
 
 	private void addError(
