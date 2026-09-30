@@ -2,17 +2,22 @@
 
 ## 1. Document Status
 
-This document defines the production-level architecture and database design for
-Customer Ordering V1.
+This document records the Customer Ordering architecture, including the
+original broader lifecycle target. The implemented single-Reservation Order
+Management V1 contract is defined by `docs/order-management.md`; where this
+document describes multi-item Orders, Order completion, Order cancellation, or
+Inventory `reserved -> sold`, those sections are future design only.
 
 The completed Customer increments implement `CustomerStatus`, the `Customer`
 entity, `CustomerRepository`, `CustomerCreateRequest`, `CustomerResponse`, and
 the transactional Customer creation service with focused persistence,
 DTO-validation, service, controller, and duplicate-constraint translation
 tests. `POST /api/v1/customers`, its OpenAPI contract, and the Customer
-duplicate HTTP mapping are implemented. Order, OrderItem, remaining controllers
-and HTTP mappings, migrations, schedulers, security rules, Kafka integration,
-Redis integration, and AI integration remain unimplemented. Reservation
+duplicate HTTP mapping are implemented. Order and OrderItem persistence,
+single-Reservation conversion, create/get APIs, and their HTTP mappings are
+implemented. Multi-item Orders, completion, cancellation, migrations,
+schedulers, security rules, Kafka integration, Redis integration, and AI
+integration remain unimplemented. Reservation
 persistence now includes `ReservationStatus`, the `Reservation` entity,
 `ReservationRepository`, and focused real-MySQL persistence tests; Reservation
 DTOs and the concurrency-safe allocation service are also implemented.
@@ -1515,9 +1520,17 @@ certification.
 
 ### 26.3 Order
 
+The single-Reservation V1 create and customer-owned read endpoints are
+implemented:
+
 ```http
 POST /api/v1/customers/{customerPublicId}/orders
 GET  /api/v1/customers/{customerPublicId}/orders/{orderPublicId}
+```
+
+Cancellation and completion remain future design:
+
+```http
 POST /api/v1/customers/{customerPublicId}/orders/{orderPublicId}/cancel
 POST /api/v1/restaurants/{restaurantPublicId}/orders/{orderPublicId}/complete
 ```
@@ -1528,7 +1541,7 @@ Create headers:
 
 Create request fields:
 
-- non-empty list of `reservationPublicIds`
+- required `reservationPublicId`
 
 The response contains:
 
@@ -1539,10 +1552,9 @@ The response contains:
 - lifecycle timestamps; and
 - OrderItems containing only public UUIDs and immutable snapshots.
 
-New creates return `201 Created`. A successful idempotent replay may return the
-existing representation with `200 OK` and an explicit replay indicator. The
-exact replay header must be finalized with controller implementation and
-documented in OpenAPI.
+New creates and successful same-request idempotent replays return `201 Created`
+with the original persisted representation. `docs/order-management.md` is the
+authoritative contract for this implemented subset.
 
 ## 27. Error Handling
 

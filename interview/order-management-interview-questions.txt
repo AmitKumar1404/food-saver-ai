@@ -1,0 +1,141 @@
+============================================================
+FOODSAVER AI - ORDER MANAGEMENT V1 INTERVIEW QUESTIONS
+============================================================
+
+1. BEGINNER
+
+Q1. What is the difference between a Reservation and an Order?
+Answer: A Reservation is a time-limited quantity and price hold. An Order is
+the durable confirmation created from that hold.
+
+Q2. What does a successful V1 conversion create?
+Answer: One CONFIRMED Order, exactly one OrderItem, and an ACTIVE-to-CONVERTED
+transition on the source Reservation.
+
+Q3. Does Order creation move Inventory reserved quantity to sold?
+Answer: No. CONVERTED Reservations still count in the reserved ledger. A
+future completion or fulfillment workflow will perform reserved-to-sold.
+
+Q4. Why does the API expose UUIDs instead of database IDs?
+Answer: Public UUIDs keep internal storage identifiers out of the API and
+provide stable externally safe identifiers.
+
+Q5. Why is there only one OrderItem per Order in V1?
+Answer: V1 intentionally converts one Reservation at a time. A unique
+order_id constraint enforces that scope in the database.
+
+2. INTERMEDIATE
+
+Q6. Which prices are authoritative during conversion?
+Answer: Reservation quantity, unit price, total, and currency snapshots.
+Current Offer and Product prices must not reprice the Order.
+
+Q7. Why snapshot the Product name?
+Answer: It preserves what was confirmed even if the Product is renamed later.
+
+Q8. What is the Order idempotency scope?
+Answer: The pair of customer_id and idempotency_key. The request hash includes
+the Customer public UUID and Reservation public UUID.
+
+Q9. What happens when the same key and same request are retried?
+Answer: The original persisted Order and OrderItem are returned.
+
+Q10. What happens when the same key is reused for another Reservation?
+Answer: The request hash differs, so the service returns a controlled 409
+idempotency conflict.
+
+Q11. Why is a database unique constraint still necessary?
+Answer: Application checks alone cannot prevent concurrent inserts. The named
+constraint is the authoritative last defense.
+
+Q12. Which transaction isolation is used for conversion?
+Answer: READ_COMMITTED, matching the existing runtime allocation workflow.
+Correctness comes from explicit pessimistic locks and database constraints.
+
+3. ADVANCED
+
+Q13. What is the canonical lock order?
+Answer: Customer PESSIMISTIC_WRITE, Restaurant PESSIMISTIC_READ, Product
+PESSIMISTIC_READ, Inventory PESSIMISTIC_WRITE, Offers PESSIMISTIC_WRITE in
+ascending ID order, then Reservations PESSIMISTIC_WRITE in ascending ID order.
+Immutable lock-target IDs are resolved without locking after Customer.
+
+Q14. Why must every conversion path use the same order?
+Answer: Consistent ordering prevents cyclic waits and materially reduces
+deadlock risk across allocation and conversion.
+
+Q15. Why is Inventory write-locked if conversion does not change it?
+Answer: The command must validate a stable Inventory and Reservation ledger
+against concurrent allocation. It also preserves the shared canonical order.
+
+Q16. Which ledger invariants are checked?
+Answer: prepared equals available plus reserved plus sold, and reserved equals
+the sum of ACTIVE plus CONVERTED Reservation quantities.
+
+Q17. Why does CONVERTED remain in the reserved sum?
+Answer: Conversion confirms the Order but does not fulfill it. The quantity
+remains physically reserved until a future completion workflow moves it.
+
+Q18. What happens when an invariant is inconsistent?
+Answer: Conversion fails closed with a controlled conflict. There is no
+automatic repair and no partial Order, OrderItem, or Reservation mutation.
+
+Q19. Why is the response mapped before transaction completion safe here?
+Answer: All required public and snapshot fields are read while the managed
+entities and transaction are active; no internal entity is returned.
+
+Q20. How is an idempotency unique-constraint race recovered?
+Answer: The failed transaction first rolls back. A read-only REQUIRES_NEW
+transaction then verifies the winning row and hash, after which conversion is
+retried to replay it.
+
+Q21. Why not look up the winner inside the failed transaction?
+Answer: A constraint failure can mark that transaction rollback-only and its
+snapshot may not safely observe the winner.
+
+Q22. Why translate only named constraints?
+Answer: Broad DataIntegrityViolationException handling could mislabel foreign
+key, check, truncation, or schema failures as harmless idempotency conflicts.
+
+4. THREE-YEAR / SCENARIO QUESTIONS
+
+Q23. Two requests with different keys convert the same Reservation. What
+should happen?
+Answer: Canonical locks serialize them. One commits; the other observes a
+non-ACTIVE Reservation and returns 409. The unique reservation_id constraint
+is an additional database defense.
+
+Q24. An exception occurs after OrderItem persistence but before commit. What
+must remain?
+Answer: No Order or OrderItem may survive, and the Reservation must remain
+ACTIVE with no convertedAt value. The one transaction rolls everything back.
+
+Q25. The Offer price changes after Reservation creation. Which value is used?
+Answer: Reservation.unitPrice and Reservation.totalAmount. Repricing from the
+Offer would violate the accepted snapshot.
+
+Q26. Why capture one normalized transaction timestamp after locking?
+Answer: It gives confirmedAt, createdAt, updatedAt, and convertedAt one
+consistent business instant and matches MySQL TIMESTAMP(6) precision.
+
+Q27. What should a lock timeout or deadlock return?
+Answer: A controlled 409 conversion conflict suitable for retry, not raw SQL
+or a generic 500. Unrelated database errors must still propagate.
+
+Q28. Why is activation gating reused?
+Answer: Conversion relies on the same reconciled Reservation/Inventory ledger
+as allocation. If that durable baseline is not active, conversion must fail
+closed.
+
+Q29. What would be wrong with decrementing reserved during V1 conversion?
+Answer: The Reservation changes to CONVERTED, which remains included in the
+ledger sum, so Inventory.reserved would no longer equal the ledger.
+
+Q30. What belongs in the future fulfillment module?
+Answer: The atomic reserved-to-sold Inventory movement and the corresponding
+lifecycle semantics. Payment, delivery, refunds, and cancellation are also
+outside Order Management V1.
+
+Q31. Does this implementation prove production reconciliation is complete?
+Answer: No. Reconciliation and activation of the production baseline remain
+explicit deployment and operational work.
