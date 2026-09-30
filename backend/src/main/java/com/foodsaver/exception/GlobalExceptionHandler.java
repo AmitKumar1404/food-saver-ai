@@ -84,6 +84,20 @@ public class GlobalExceptionHandler {
 		return ResponseEntity.badRequest().body(response);
 	}
 
+	@ExceptionHandler(InvalidIdempotencyKeyException.class)
+	public ResponseEntity<ErrorResponse> handleInvalidIdempotencyKeyException(
+			InvalidIdempotencyKeyException exception,
+			HttpServletRequest request) {
+		ErrorResponse response = new ErrorResponse(
+				Instant.now(),
+				HttpStatus.BAD_REQUEST.value(),
+				exception.getMessage(),
+				request.getRequestURI(),
+				Map.of());
+
+		return ResponseEntity.badRequest().body(response);
+	}
+
 	@ExceptionHandler(OfferValidationException.class)
 	public ResponseEntity<ErrorResponse> handleOfferValidationException(
 			OfferValidationException exception,
@@ -168,6 +182,48 @@ public class GlobalExceptionHandler {
 		return ResponseEntity.status(HttpStatus.CONFLICT).body(response);
 	}
 
+	@ExceptionHandler(CustomerAlreadyExistsException.class)
+	public ResponseEntity<ErrorResponse> handleCustomerAlreadyExistsException(
+			CustomerAlreadyExistsException exception,
+			HttpServletRequest request) {
+		ErrorResponse response = new ErrorResponse(
+				Instant.now(),
+				HttpStatus.CONFLICT.value(),
+				exception.getMessage(),
+				request.getRequestURI(),
+				Map.of());
+
+		return ResponseEntity.status(HttpStatus.CONFLICT).body(response);
+	}
+
+	@ExceptionHandler(CustomerNotFoundException.class)
+	public ResponseEntity<ErrorResponse> handleCustomerNotFoundException(
+			CustomerNotFoundException exception,
+			HttpServletRequest request) {
+		ErrorResponse response = new ErrorResponse(
+				Instant.now(),
+				HttpStatus.NOT_FOUND.value(),
+				exception.getMessage(),
+				request.getRequestURI(),
+				Map.of());
+
+		return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
+	}
+
+	@ExceptionHandler(OfferNotFoundException.class)
+	public ResponseEntity<ErrorResponse> handleOfferNotFoundException(
+			OfferNotFoundException exception,
+			HttpServletRequest request) {
+		ErrorResponse response = new ErrorResponse(
+				Instant.now(),
+				HttpStatus.NOT_FOUND.value(),
+				exception.getMessage(),
+				request.getRequestURI(),
+				Map.of());
+
+		return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
+	}
+
 	@ExceptionHandler(FoodEligibilityEvaluationNotFoundException.class)
 	public ResponseEntity<ErrorResponse> handleFoodEligibilityEvaluationNotFoundException(
 			FoodEligibilityEvaluationNotFoundException exception,
@@ -199,6 +255,24 @@ public class GlobalExceptionHandler {
 	@ExceptionHandler(OfferAlreadyExistsException.class)
 	public ResponseEntity<ErrorResponse> handleOfferAlreadyExistsException(
 			OfferAlreadyExistsException exception,
+			HttpServletRequest request) {
+		ErrorResponse response = new ErrorResponse(
+				Instant.now(),
+				HttpStatus.CONFLICT.value(),
+				exception.getMessage(),
+				request.getRequestURI(),
+				Map.of());
+
+		return ResponseEntity.status(HttpStatus.CONFLICT).body(response);
+	}
+
+	@ExceptionHandler({
+			ReservationValidationException.class,
+			ReservationIdempotencyConflictException.class,
+			ReservationAllocationConflictException.class
+	})
+	public ResponseEntity<ErrorResponse> handleReservationConflict(
+			RuntimeException exception,
 			HttpServletRequest request) {
 		ErrorResponse response = new ErrorResponse(
 				Instant.now(),

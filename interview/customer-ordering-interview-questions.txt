@@ -1,0 +1,847 @@
+============================================================
+FOODSAVER AI - CUSTOMER ORDERING INTERVIEW QUESTIONS
+============================================================
+
+Module:
+Customer Ordering
+
+Current implementation:
+- CustomerStatus
+- Customer entity
+- CustomerRepository
+- Customer persistence integration tests
+- CustomerCreateRequest with Bean Validation
+- CustomerResponse
+- Customer DTO validation tests
+- CustomerService and CustomerServiceImpl
+- CustomerAlreadyExistsException
+- CustomerNotFoundException
+- Customer service integration and persistence-translation tests
+- CustomerController create and get-by-public-ID endpoints
+- CustomerAlreadyExistsException HTTP 409 mapping
+- CustomerNotFoundException HTTP 404 mapping
+- Customer create/get OpenAPI contracts and controller tests
+- ReservationStatus
+- Reservation entity and ReservationRepository
+- Reservation real-MySQL persistence tests
+- ReservationCreateRequest and ReservationResponse
+- ReservationService coordinator and READ_COMMITTED allocation command
+- Canonical pessimistic locks and authoritative Inventory/Reservation ledger
+- Server-side pricing, configured TTL, atomic expiry release, and concurrent
+  idempotency recovery
+- Release-specific durable reconciliation marker and startup activation guard
+- Real-MySQL lock-wait, runtime-isolation, idempotency-race, and rollback tests
+- Reservation service and DTO tests
+- ReservationController create endpoint, required Idempotency-Key validation,
+  OpenAPI contract, HTTP exception mappings, and controller tests
+
+Not yet implemented:
+- Customer update, delete, list, or search APIs
+- Reservation GET/cancel APIs and the standalone expiry/lifecycle worker
+- Order or OrderItem persistence and workflows
+- Production reconciliation execution and deployment sequencing
+- Kafka, Redis, AI, RAG, payment, authentication, or authorization
+
+
+============================================================
+1. BEGINNER - CUSTOMER DOMAIN
+============================================================
+
+Q1. What does Customer represent in FoodSaver?
+
+Expected answer:
+Customer is the minimal profile aggregate that will own future Reservations
+and Orders. It is deliberately separate from authentication credentials,
+payment data, and AI profiles.
+
+
+Q2. Which Customer lifecycle states exist?
+
+Expected answer:
+ACTIVE, SUSPENDED, and CLOSED. They are persisted as strings so database
+values remain readable and enum declaration order does not affect stored data.
+
+
+Q3. Why does Customer use both an internal ID and a public UUID?
+
+Expected answer:
+The BIGINT identity is efficient for database primary keys and future foreign
+keys. The UUID is the stable public identifier intended for API boundaries.
+Internal IDs and JPA versions must not be exposed publicly.
+
+
+Q4. Which Customer fields are intentionally absent?
+
+Expected answer:
+Passwords, roles, JWT data, payment fields, and AI profile fields are absent.
+Those concerns do not belong in this persistence increment.
+
+
+============================================================
+2. INTERMEDIATE - JPA AND DATABASE DESIGN
+============================================================
+
+Q5. Which constraints protect Customer identity?
+
+Expected answer:
+uk_customers_public_id uniquely protects public_id, and uk_customers_email
+uniquely protects the canonical email value.
+
+
+Q6. Why is email canonicalized in application code?
+
+Expected answer:
+The application converts email to lowercase with Locale.ROOT before
+persistence so uniqueness does not accidentally depend on a database
+collation. CustomerServiceImpl uses the same canonical form before duplicate
+checks and persistence.
+
+
+Q7. Does V1 trim or otherwise normalize email?
+
+Expected answer:
+No. V1 performs lowercase conversion only. Trimming, provider-specific
+rewriting, and other normalization rules were not invented.
+
+
+Q8. Why do both the email setter and entity lifecycle callbacks canonicalize
+email?
+
+Expected answer:
+The setter gives immediate canonical state to normal callers. The callbacks
+provide a defensive persistence boundary before insert and update.
+
+
+Q9. What does @Version protect?
+
+Expected answer:
+It provides optimistic concurrency control for future Customer profile and
+lifecycle updates. A stale update will fail instead of silently overwriting a
+newer committed version.
+
+
+Q10. Why are audit columns TIMESTAMP(6)?
+
+Expected answer:
+Microsecond precision matches the module design and preserves useful ordering
+and audit detail without relying on database-default timestamp precision.
+
+
+Q11. Which Customer query index is implemented?
+
+Expected answer:
+idx_customers_status_created on status and created_at supports lifecycle-based
+processing or administrative listing ordered or filtered by creation time.
+
+
+============================================================
+3. ADVANCED AND PRODUCTION SCENARIOS
+============================================================
+
+Q12. Is an application-level duplicate check enough to guarantee unique
+email?
+
+Expected answer:
+No. Concurrent transactions may both pass a pre-check. The named database
+unique constraint remains the final integrity defense. CustomerServiceImpl
+translates only the named email constraint without hiding unrelated database
+failures. GlobalExceptionHandler exposes the controlled conflict as HTTP 409.
+
+
+Q13. Why is contact_phone nullable and not unique?
+
+Expected answer:
+Phone verification and phone-based identity are not part of V1. Making the
+column optional avoids inventing unsupported identity or verification
+semantics.
+
+
+Q14. Why are there no Customer relationships yet?
+
+Expected answer:
+Reservation and Order are intentionally deferred. Adding placeholder
+relationships now would expand this incremental step and risk premature
+cascade or deletion behavior.
+
+
+Q15. Should future ordering history cascade-delete when a Customer closes?
+
+Expected answer:
+No. Customer lifecycle changes must not erase future Reservation or Order
+history. CLOSED is a lifecycle state, not a request for cascading historical
+deletion.
+
+
+Q16. Scenario: two requests submit the same email with different letter case.
+What must happen?
+
+Expected answer:
+Both values canonicalize to the same lowercase value. At most one row can
+persist because uk_customers_email protects the canonical column.
+
+Possible follow-up:
+Does this replace request validation?
+
+Follow-up answer:
+No. CustomerCreateRequest validates required fields, email syntax, and field
+lengths. CustomerServiceImpl canonicalizes the valid email before duplicate
+checks and persistence.
+
+
+Q17. Scenario: a client sends an internal Customer ID or version. Should the
+server accept it?
+
+Expected answer:
+No. CustomerCreateRequest accepts only email, displayName, and optional
+contactPhone. It does not accept publicId, internal database ID, version,
+status, createdAt, or updatedAt. CustomerResponse exposes publicId, email,
+displayName, contactPhone, status, createdAt, and updatedAt. Neither DTO
+exposes the internal database ID or version.
+
+
+Q18. Can AI decide whether a Customer may order food that deterministic
+eligibility rules rejected?
+
+Expected answer:
+No. AI is advisory only. Customer Ordering must consume the existing Offer and
+deterministic eligibility result and cannot override food-safety or allocation
+checks.
+
+
+============================================================
+4. TRICKY AND FOLLOW-UP QUESTIONS
+============================================================
+
+Q19. Does a UUID provide authentication or authorization?
+
+Expected answer:
+No. A UUID is a public identifier, not a credential. Authentication and
+authorization remain a future concern.
+
+
+Q20. Why does Customer expose only create and get-by-public-ID endpoints?
+
+Expected answer:
+The project is implemented incrementally. The persistence model, DTO contract,
+transactional creation service, and POST /api/v1/customers endpoint are
+complete, together with GET /api/v1/customers/{customerPublicId}. Customer
+update, delete, list, and search operations require separate reviewed steps.
+
+
+Q21. Is the configured Reservation TTL part of the Customer entity?
+
+Expected answer:
+No. The approved design uses one future global
+foodsaver.ordering.reservation-ttl property. It belongs to Reservation
+behavior and is not implemented in the Customer persistence step.
+
+
+Q22. Which validation annotations are used by CustomerCreateRequest?
+
+Expected answer:
+Email uses @NotBlank, @Email, and @Size(max = 254). Display name uses
+@NotBlank and @Size(max = 100). Optional contact phone uses
+@Size(max = 32).
+
+
+Q23. Why does the Customer DTO not lowercase email?
+
+Expected answer:
+Validation and canonicalization are separate responsibilities. The DTO
+validates the submitted API value without mutating it. CustomerServiceImpl and
+the Customer domain apply Locale.ROOT lowercase before duplicate checks and
+persistence.
+
+
+Q24. Which fields does CustomerResponse intentionally exclude?
+
+Expected answer:
+It excludes the internal database ID and optimistic-lock version. It exposes
+only publicId, email, displayName, contactPhone, status, createdAt, and
+updatedAt.
+
+
+Q25. Why does contactPhone have no regex validation?
+
+Expected answer:
+The Customer V1 contract defines only optionality and a maximum length.
+Inventing a country-specific or universal phone-number rule would add an
+unapproved business constraint.
+
+
+Q26. What does CustomerServiceImpl do during Customer creation?
+
+Expected answer:
+Inside one transaction, it canonicalizes the validated email, performs a fast
+duplicate check, creates an ACTIVE Customer with only client-controlled
+profile fields, flushes persistence, and maps the approved response fields.
+The entity lifecycle generates the public UUID and audit timestamps, while JPA
+manages the version.
+
+
+Q27. Why are both existsByEmail and uk_customers_email required?
+
+Expected answer:
+The repository existence check provides fast feedback during ordinary
+requests, but concurrent transactions can both pass it. The database unique
+constraint remains the final authority and prevents duplicate canonical email
+rows.
+
+
+Q28. Why does Customer creation use saveAndFlush?
+
+Expected answer:
+It forces a unique-constraint failure to occur inside the transactional
+service method, where the named email constraint can be translated to
+CustomerAlreadyExistsException. Unrelated DataIntegrityViolationException
+instances are rethrown.
+
+
+Q29. What happens to the transaction after a concurrent email constraint
+violation?
+
+Expected answer:
+CustomerAlreadyExistsException leaves the transactional service method. The
+transaction interceptor rolls the transaction back; the service does not catch
+the failure and continue using a transaction marked rollback-only.
+
+
+Q30. What is the Customer creation endpoint and success status?
+
+Expected answer:
+POST /api/v1/customers accepts CustomerCreateRequest and returns
+CustomerResponse with HTTP 201 Created.
+
+
+Q31. Where does Customer request validation run?
+
+Expected answer:
+CustomerController uses @Valid on the request body. Bean Validation failures
+are handled by GlobalExceptionHandler and returned as the existing HTTP 400
+ErrorResponse structure. The controller does not repeat DTO validation.
+
+
+Q32. Does CustomerController canonicalize email or check duplicates?
+
+Expected answer:
+No. It delegates the validated request to CustomerService. Canonicalization,
+duplicate checks, transaction management, and persistence belong to the
+service layer.
+
+
+Q33. How is a duplicate canonical email represented over HTTP?
+
+Expected answer:
+CustomerAlreadyExistsException is handled centrally as HTTP 409 Conflict using
+ErrorResponse. The controller does not catch the exception.
+
+
+Q34. How are malformed Customer request bodies handled?
+
+Expected answer:
+The existing HttpMessageNotReadableException handler returns HTTP 400 with the
+message "Malformed request body", the request path, and no internal exception
+details.
+
+
+Q35. What does the Customer create OpenAPI operation document?
+
+Expected answer:
+It documents CustomerResponse for HTTP 201 and ErrorResponse for HTTP 400
+validation or malformed-body failures and HTTP 409 canonical-email conflicts.
+The schemas do not expose internal Customer ID or version.
+
+
+Q36. How is one Customer retrieved?
+
+Expected answer:
+GET /api/v1/customers/{customerPublicId} accepts the external Customer UUID,
+delegates to CustomerService, and returns CustomerResponse with HTTP 200.
+
+
+Q37. Does Customer lookup use the internal database ID?
+
+Expected answer:
+No. CustomerServiceImpl calls CustomerRepository.findByPublicId with the UUID.
+The internal BIGINT ID is neither accepted by the endpoint nor exposed in the
+response.
+
+
+Q38. What happens when a Customer public UUID does not exist?
+
+Expected answer:
+CustomerServiceImpl throws CustomerNotFoundException. GlobalExceptionHandler
+maps it to HTTP 404 with the existing ErrorResponse structure.
+
+
+Q39. What happens when customerPublicId is not a valid UUID?
+
+Expected answer:
+Spring cannot convert the path parameter to UUID, so the existing
+MethodArgumentTypeMismatchException handler returns HTTP 400 with an
+"Invalid path parameter" ErrorResponse. CustomerService is not invoked.
+
+
+Q40. What does the Customer GET OpenAPI operation document?
+
+Expected answer:
+It documents CustomerResponse for HTTP 200 and ErrorResponse for HTTP 400
+invalid UUID and HTTP 404 missing Customer responses.
+
+
+============================================================
+5. RESERVATION PERSISTENCE
+============================================================
+
+Q41. What does Reservation represent in the persistence model?
+
+Expected answer:
+Reservation is a durable, customer-owned record for a future temporary hold
+against one Offer and Inventory record. This increment persists the model but
+does not allocate quantity or implement Reservation APIs.
+
+
+Q42. Which Reservation statuses are implemented?
+
+Expected answer:
+ACTIVE, CONVERTED, CANCELLED, and EXPIRED. They are marketplace and ordering
+lifecycle states, not food-safety states or certifications.
+
+
+Q43. Which upstream entities does Reservation reference?
+
+Expected answer:
+It has required lazy, unidirectional references to Customer, Restaurant,
+Offer, and Inventory. No parent collections or cascade deletion are added, so
+Reservation history cannot cascade-delete upstream records.
+
+
+Q44. Which Reservation fields are immutable after insert?
+
+Expected answer:
+The upstream references, quantity, price and currency snapshots,
+idempotencyKey, requestHash, expiresAt, publicId, and createdAt are
+non-updatable. Future services may change status and lifecycle timestamps.
+
+
+Q45. Which database constraints protect Reservation persistence?
+
+Expected answer:
+The table has unique constraints on publicId and on customer plus
+idempotencyKey. A named check constraint requires positive quantity,
+unitPrice, and totalAmount and requires expiresAt to be after createdAt.
+
+
+Q46. Why is the idempotency key unique only within one Customer?
+
+Expected answer:
+The same external key may legitimately be used by different Customers. The
+customer-scoped unique constraint prevents duplicate creation for one
+Customer while avoiding a global key namespace.
+
+
+Q47. Why are unitPrice, totalAmount, and currencyCode stored on Reservation?
+
+Expected answer:
+They are immutable Offer pricing snapshots. Future Product or Offer changes
+must not rewrite the historical values associated with a hold.
+
+
+Q48. Why does the database not enforce totalAmount equals quantity multiplied
+by unitPrice?
+
+Expected answer:
+The future service will own scale-aware multiplication and explicit rounding.
+A database multiplication equality check could apply different decimal
+rounding semantics and create two competing authorities.
+
+
+Q49. What does @Version provide on Reservation?
+
+Expected answer:
+It provides optimistic locking for future lifecycle transitions. The
+transactional service and pessimistic aggregate locks will still be required
+for allocation and overselling prevention.
+
+
+Q50. Does persisting a Reservation entity reserve Inventory?
+
+Expected answer:
+Persisting an entity directly does not reserve Inventory. The implemented
+allocation command does: while Inventory is locked it atomically moves quantity
+from available to reserved and persists the ACTIVE Reservation in one
+transaction.
+
+
+============================================================
+6. RESERVATION SERVICE FOUNDATION
+============================================================
+
+Q51. What is the implemented Reservation service boundary?
+
+Expected answer:
+ReservationService accepts the Customer public UUID, ReservationCreateRequest,
+and idempotency key. It resolves Customer and Offer from public identifiers,
+derives upstream relationships and snapshots server-side, and returns
+ReservationResponse. ReservationController now supplies these three exact
+inputs from the create HTTP boundary.
+
+
+Q52. Why does ReservationCreateRequest contain only offerPublicId and quantity?
+
+Expected answer:
+Customer ownership comes from the future URL boundary, while Restaurant,
+Product, Inventory, price, currency, status, and expiry must be derived from
+trusted persisted state. Accepting those values from a client would permit
+source or pricing manipulation.
+
+
+Q53. How is Reservation pricing calculated?
+
+Expected answer:
+unitPrice is copied from immutable Offer.offerPrice. totalAmount is quantity
+multiplied by unitPrice and rounded to scale 2 with HALF_UP. The service does
+not recalculate the Offer price from the current Product base price.
+
+
+Q54. How is Reservation expiry calculated?
+
+Expected answer:
+The service captures one transaction time and chooses the earlier of that time
+plus foodsaver.ordering.reservation-ttl and Offer.expiresAt. The development
+default is PT15M, and the hold can never outlive the Offer.
+
+
+Q55. What is included in the Reservation idempotency request hash?
+
+Expected answer:
+SHA-256 is calculated over newline-separated Customer public UUID, Offer public
+UUID, and quantity normalized to database scale 3. Price, current time, expiry,
+and generated UUID are excluded so equivalent retries have the same hash.
+
+
+Q56. What idempotency behavior is implemented?
+
+Expected answer:
+A Customer write lock serializes same-Customer requests. The same key and hash
+replays the existing Reservation; a different hash throws
+ReservationIdempotencyConflictException. If the named database unique
+constraint still loses a race, the allocation transaction rolls back before a
+separate read-only transaction verifies and returns the winner.
+
+
+Q57. Why is the coordinator separate from the transactional command?
+
+Expected answer:
+Spring self-invocation would not activate a transactional proxy, and unique
+constraint recovery must occur only after the failed allocation transaction
+has rolled back. A non-transactional coordinator delegates to a separately
+proxied READ_COMMITTED command and then, only for the named idempotency race,
+uses a separate read-only recovery transaction.
+
+
+Q58. Does this service foundation prevent overselling?
+
+Expected answer:
+Yes for the implemented V1 allocation path. Inventory is the serialization
+point, Offer capacity is derived from ACTIVE and CONVERTED Reservations, both
+capacity checks happen after canonical locks, and Inventory movement plus
+Reservation persistence commit atomically.
+
+
+Q59. Does Reservation creation introduce new food-safety authority?
+
+Expected answer:
+No. The service consumes the persisted Offer as the marketplace source. It
+does not re-run, weaken, or replace deterministic Food Eligibility rules, and
+Reservation ACTIVE remains a marketplace lifecycle state only.
+
+
+============================================================
+7. RESERVATION CREATE HTTP API
+============================================================
+
+Q60. What is the implemented Reservation creation endpoint?
+
+Expected answer:
+POST /api/v1/customers/{customerPublicId}/reservations accepts a UUID path
+parameter, validated ReservationCreateRequest body, and required
+Idempotency-Key header. It delegates to ReservationService and returns
+ReservationResponse with HTTP 201 Created.
+
+
+Q61. Why should ReservationController contain minimal business logic?
+
+Expected answer:
+The controller owns HTTP binding, DTO validation, header-shape validation, and
+status codes. Pricing, expiry, lifecycle rules, relationships, idempotency
+hashing/replay, transactions, and persistence belong to ReservationService so
+they remain consistent outside HTTP and are independently testable.
+
+
+Q62. Why is Idempotency-Key a request header?
+
+Expected answer:
+It describes retry semantics for the create operation rather than Reservation
+business data. The controller requires a non-blank value of at most 100
+characters and passes it unchanged to the service; it does not calculate the
+request hash or decide replay behavior.
+
+
+Q63. Why can the client not submit price, currency, or expiry?
+
+Expected answer:
+They are trusted server snapshots derived from the persisted Offer and the
+configured TTL. Accepting them from the client would permit price, currency,
+or hold-window manipulation.
+
+
+Q64. Why does the endpoint return ReservationResponse instead of Reservation?
+
+Expected answer:
+The DTO exposes only approved public/business fields. It excludes internal
+database IDs, optimistic-lock version, idempotency key, request hash, lazy JPA
+relationships, and other persistence details.
+
+
+Q65. How is a malformed customerPublicId handled?
+
+Expected answer:
+Spring UUID conversion raises MethodArgumentTypeMismatchException before the
+service runs. GlobalExceptionHandler returns HTTP 400 with "Invalid path
+parameter" and a customerPublicId error saying it must be a valid UUID.
+
+
+Q66. Why use GlobalExceptionHandler for Reservation failures?
+
+Expected answer:
+Central handling keeps ErrorResponse consistent and prevents repetitive
+try/catch blocks in controllers. CustomerNotFoundException and
+OfferNotFoundException map to 404, while ReservationValidationException and
+ReservationIdempotencyConflictException map to 409.
+ReservationAllocationConflictException also maps to 409 without exposing
+internal database IDs, quantities, lock diagnostics, or SQL details.
+
+
+Q67. What is the difference between 400, 404, and 409 for this endpoint?
+
+Expected answer:
+400 means the HTTP input is malformed or fails structural validation. 404
+means the referenced Customer or Offer does not exist. 409 means the request
+is structurally valid but current lifecycle/business state or prior
+idempotency-key use conflicts with creation.
+
+
+Q68. Why is controller validation insufficient for concurrency correctness?
+
+Expected answer:
+Bean Validation and header checks inspect one request only. They cannot
+serialize competing transactions, calculate authoritative aggregate
+allocation, or recover a database uniqueness race. Those controls are
+implemented in the lock-based allocation command.
+
+
+Q69. Does the create endpoint reserve Inventory quantity today?
+
+Expected answer:
+Yes, when foodsaver.ordering.allocation-enabled is explicitly true after data
+reconciliation. Successful creation moves available quantity to reserved in
+the same transaction as the Reservation insert. Production defaults the gate
+to false.
+
+
+Q70. How does the controller contract support future concurrency-safe
+allocation?
+
+Expected answer:
+It passes Customer public UUID, validated Offer/quantity request, and
+idempotency key through one stable boundary. The allocation implementation
+added deterministic locks, post-lock validation, atomic Inventory movement,
+and concurrent retry recovery without changing the controller or request DTO.
+
+
+============================================================
+8. CONCURRENCY-SAFE RESERVATION ALLOCATION
+============================================================
+
+Q71. What is the canonical allocation lock order?
+
+Expected answer:
+Customer, Restaurant, Product, Inventory, Offers ordered by internal ID, then
+ACTIVE Reservations ordered by internal ID. Customer, Inventory, Offers, and
+Reservations use pessimistic write locks. Restaurant and Product use
+pessimistic read locks. No supported workflow may reverse this order.
+
+
+Q72. Why does the allocation transaction use READ_COMMITTED?
+
+Expected answer:
+MySQL REPEATABLE_READ can retain an aggregate snapshot established before a
+lock wait. READ_COMMITTED ensures post-Inventory-lock SUM queries see the
+latest committed Reservation ledger. The Inventory row remains the
+serialization point; aggregate queries validate state rather than provide
+locking.
+
+
+Q73. Which two quantity invariants are authoritative?
+
+Expected answer:
+For the locked Inventory, prepared must equal available plus reserved plus
+sold, and reserved must equal the sum of ACTIVE and CONVERTED Reservation
+quantity for that Inventory. A mismatch fails closed before mutation and is
+checked again after expiry release and final persistence.
+
+
+Q74. How are expired ACTIVE Reservations handled during creation?
+
+Expected answer:
+After all locks, the command captures one transaction time. Every locked ACTIVE
+Reservation with expiresAt less than or equal to that time moves to EXPIRED,
+sets expiredAt, and releases reserved quantity to available. The changes are
+in the same transaction as the new allocation, so a later failure rolls all of
+them back.
+
+
+Q75. How is Offer remaining quantity calculated?
+
+Expected answer:
+Offer has no mutable remaining counter. Allocation is the SUM of Reservation
+quantity for that Offer in ACTIVE or CONVERTED status. Remaining quantity is
+offeredQuantity minus that sum, and the request must fit both the Offer
+remainder and current Inventory available quantity.
+
+
+Q76. Why is allocation disabled by default?
+
+Expected answer:
+Foundation-era ACTIVE Reservations were persisted without Inventory movement,
+so they cannot be assumed to own reserved quantity. Production uses
+foodsaver.ordering.allocation-enabled=false until writes are quiesced, legacy
+rows are explicitly classified, Inventory is reconciled, and a durable
+release-specific reconciliation marker is recorded. Tests enable the property
+explicitly against clean data.
+
+
+Q77. Why is Reservation cancellation still deferred?
+
+Expected answer:
+Cancellation may release quantity only for a Reservation proven to own an
+Inventory hold. New allocation-backed Reservations satisfy that condition, but
+the cancellation workflow still needs the same lock order, state revalidation,
+and exactly-once release implementation. No cancellation API is implemented in
+this increment.
+
+
+Q78. Does allocation add food-safety authority?
+
+Expected answer:
+No. Allocation consumes an existing locked Offer whose immutable evaluation
+lineage remains ELIGIBLE_FOR_OFFER. It does not create SAFE, UNSAFE,
+CERTIFIED, or APPROVED_FOR_SALE states and does not invoke AI or RAG.
+
+
+Q79. Why is a balanced Reservation ledger insufficient to activate allocation?
+
+Expected answer:
+Legacy foundation Reservations did not necessarily allocate Inventory. Their
+quantities can coincidentally equal reservedQuantity, so quantity equality
+cannot prove allocation backing. Allocation requires the exact durable
+RESERVATION_ALLOCATION_V1 reconciliation marker in addition to valid
+Inventory and Reservation-ledger equations.
+
+
+Q80. What does the reconciliation marker lifecycle prove?
+
+Expected answer:
+RECONCILED_BASELINE records that the release-specific operational
+reconciliation reached a clean baseline: no legacy ACTIVE or CONVERTED rows
+and zero Inventory reserved quantity. Startup validates that baseline and
+atomically changes the marker to ACTIVATED. Later restarts require the same
+release marker and revalidate current ledgers; a generic boolean cannot
+authorize a future incompatible release.
+
+
+Q81. Can allocation traffic run while startup preflight is incomplete?
+
+Expected answer:
+No. The in-process activation guard starts closed and becomes active only
+after the marker transition and preflight transaction commit. The public
+coordinator checks the guard before opening the allocation transaction.
+Missing, invalid, or wrong-release markers fail startup and leave the guard
+closed.
+
+
+Q82. Has production reconciliation been performed by this implementation?
+
+Expected answer:
+No. The durable marker schema, validation, and gate are implemented, but
+production must still quiesce writes, establish a cutoff, classify old ACTIVE
+rows, reject unresolved CONVERTED rows, require zero reserved quantity, record
+the exact marker, and sequence deployment before enabling allocation. The
+application never infers legacy backing from quantities.
+
+
+Q83. What happens when an idempotent replay finds an ACTIVE row whose expiry
+has passed?
+
+Expected answer:
+It enters the same canonical allocation transaction and lock order as a new
+request. After validating the locked Inventory and Reservation ledger, it
+releases the hold once, changes the Reservation to EXPIRED, and returns the
+terminal representation. It never returns stale ACTIVE state or releases
+outside the Inventory transaction.
+
+
+Q84. Why are createdAt and expiresAt based on one post-lock timestamp?
+
+Expected answer:
+The authoritative time is captured only after all canonical locks. The command
+normalizes it to MySQL TIMESTAMP(6) microsecond precision, sets createdAt
+explicitly to that value, and normalizes expiresAt after choosing the earlier
+of transactionTime plus TTL and Offer expiry. If the persisted-precision
+expiresAt is not strictly after createdAt, allocation fails before any expiry
+release, Inventory mutation, or Reservation insert. Creation, update, and
+lifecycle timestamps use the same precision so API responses match database
+reloads exactly.
+
+
+Q85. How is runtime READ_COMMITTED behavior tested?
+
+Expected answer:
+Real-MySQL tests inspect @@transaction_isolation inside the allocation
+transaction. Independent connections are coordinated with latches and database
+lock-wait observation so one transaction waits for Inventory, then proves its
+post-lock aggregate sees the first transaction's committed ledger change.
+
+
+Q86. How is the database idempotency race tested if the normal Customer lock
+serializes requests?
+
+Expected answer:
+A focused integration setup holds Inventory while the normal allocation owns
+the Customer lock, inserts a competing winner through an independent database
+transaction, and lets saveAndFlush lose on the real
+uk_reservations_customer_idempotency constraint. The losing allocation rolls
+back, a separate read-only transaction verifies the winner and hash, and the
+request re-enters the canonical command for expiry-safe replay. Production
+locking is not weakened to manufacture the race.
+
+
+Q87. Which rollback guarantees are proven against MySQL?
+
+Expected answer:
+Controlled test-only observer failures occur after expiry flush and after new
+Reservation persistence but before commit. The tests verify Inventory changes,
+Reservation insertion, and expiry transitions all roll back and that the final
+Inventory and Reservation-ledger invariants remain unchanged.
+
+
+Q88. How does restart preflight avoid a mixed Inventory/Reservation snapshot?
+
+Expected answer:
+It uses a preflight-only REPEATABLE_READ transaction. The Inventory read
+establishes a consistent non-locking snapshot, and one grouped Reservation
+aggregate query reads from that same snapshot. A concurrent runtime allocation
+can commit without being globally blocked, while preflight still sees either
+the complete pre-commit or complete post-commit ledger. Runtime allocation
+continues to use READ_COMMITTED.
