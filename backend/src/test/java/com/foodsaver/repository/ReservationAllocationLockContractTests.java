@@ -15,6 +15,7 @@ import com.foodsaver.enums.ReservationStatus;
 import com.foodsaver.repository.CustomerRepository;
 import com.foodsaver.repository.InventoryRepository;
 import com.foodsaver.repository.OfferRepository;
+import com.foodsaver.repository.OrderRepository;
 import com.foodsaver.repository.ProductRepository;
 import com.foodsaver.repository.ReservationRepository;
 import com.foodsaver.repository.RestaurantRepository;
@@ -52,6 +53,20 @@ class ReservationAllocationLockContractTests {
 	}
 
 	@Test
+	void orderCompletionCommandUsesReadCommittedIsolation() throws Exception {
+		Transactional transactional = OrderCompletionCommand.class
+				.getDeclaredMethod(
+						"complete",
+						Class.forName(
+								"com.foodsaver.service.impl."
+										+ "OrderCompletionCommand"
+										+ "$OrderCompletionRequest"))
+				.getAnnotation(Transactional.class);
+
+		assertEquals(Isolation.READ_COMMITTED, transactional.isolation());
+	}
+
+	@Test
 	void repositoriesDeclareFinalizedAllocationLockModes() throws Exception {
 		assertLock(
 				CustomerRepository.class,
@@ -72,6 +87,12 @@ class ReservationAllocationLockContractTests {
 		assertLock(
 				InventoryRepository.class,
 				"findByIdAndRestaurantId",
+				LockModeType.PESSIMISTIC_WRITE,
+				Long.class,
+				Long.class);
+		assertLock(
+				OrderRepository.class,
+				"findByIdAndCustomerIdForCompletion",
 				LockModeType.PESSIMISTIC_WRITE,
 				Long.class,
 				Long.class);

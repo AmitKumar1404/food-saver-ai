@@ -33,6 +33,7 @@ import com.foodsaver.repository.InventoryRepository;
 import com.foodsaver.repository.OrderingReconciliationMarkerRepository;
 import com.foodsaver.repository.ReservationRepository;
 import com.foodsaver.repository.projection.InventoryReservationLedgerTotal;
+import com.foodsaver.service.ReservationLedgerService;
 
 @ExtendWith(MockitoExtension.class)
 class ReservationAllocationPreflightTests {
@@ -46,6 +47,8 @@ class ReservationAllocationPreflightTests {
 	private InventoryRepository inventoryRepository;
 	@Mock
 	private ReservationRepository reservationRepository;
+	@Mock
+	private ReservationLedgerService reservationLedgerService;
 	@Mock
 	private ReservationAllocationPreflightObserver preflightObserver;
 	@Mock
@@ -65,6 +68,7 @@ class ReservationAllocationPreflightTests {
 				markerRepository,
 				inventoryRepository,
 				reservationRepository,
+				reservationLedgerService,
 				preflightObserver);
 	}
 
@@ -116,7 +120,7 @@ class ReservationAllocationPreflightTests {
 		when(reservationRepository.countByStatusIn(ALLOCATED)).thenReturn(0L);
 		when(inventoryRepository.findAllByOrderByIdForReconciliation())
 				.thenReturn(List.of());
-		when(reservationRepository.sumQuantityByInventoryAndStatusIn(ALLOCATED))
+		when(reservationLedgerService.outstandingByInventory())
 				.thenReturn(List.of());
 
 		runPreflightWithoutCommit();
@@ -140,7 +144,7 @@ class ReservationAllocationPreflightTests {
 		Inventory inventory = inventory("5.000", "4.000", "1.000", "0.000");
 		when(inventoryRepository.findAllByOrderByIdForReconciliation())
 				.thenReturn(List.of(inventory));
-		when(reservationRepository.sumQuantityByInventoryAndStatusIn(ALLOCATED))
+		when(reservationLedgerService.outstandingByInventory())
 				.thenReturn(List.of(new InventoryReservationLedgerTotal(
 						inventory.getId(),
 						new BigDecimal("1.000"))));
@@ -150,6 +154,21 @@ class ReservationAllocationPreflightTests {
 		assertTrue(activation.isActive());
 		verify(reservationRepository, never()).countByStatusIn(any());
 		verify(markerRepository, never()).saveAndFlush(any());
+	}
+
+	@Test
+	void activatedReleaseRejectsOrphanConvertedReservation() {
+		enableAllocation();
+		OrderingReconciliationMarker marker = marker();
+		marker.activate(Instant.parse("2026-09-30T08:01:00Z"));
+		arrangeMarker(marker);
+		when(reservationLedgerService.hasOrphanConvertedReservations())
+				.thenReturn(true);
+
+		assertThrows(IllegalStateException.class, this::runPreflight);
+		assertFalse(activation.isActive());
+		verify(inventoryRepository, never())
+				.findAllByOrderByIdForReconciliation();
 	}
 
 	@Test
@@ -173,7 +192,7 @@ class ReservationAllocationPreflightTests {
 		Inventory inventory = inventory("5.000", "4.000", "1.000", "0.000");
 		when(inventoryRepository.findAllByOrderByIdForReconciliation())
 				.thenReturn(List.of(inventory));
-		when(reservationRepository.sumQuantityByInventoryAndStatusIn(ALLOCATED))
+		when(reservationLedgerService.outstandingByInventory())
 				.thenReturn(List.of(new InventoryReservationLedgerTotal(
 						inventory.getId(),
 						new BigDecimal("1.000"))));

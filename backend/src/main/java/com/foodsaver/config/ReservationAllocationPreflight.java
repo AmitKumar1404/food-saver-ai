@@ -26,6 +26,7 @@ import com.foodsaver.repository.InventoryRepository;
 import com.foodsaver.repository.OrderingReconciliationMarkerRepository;
 import com.foodsaver.repository.ReservationRepository;
 import com.foodsaver.repository.projection.InventoryReservationLedgerTotal;
+import com.foodsaver.service.ReservationLedgerService;
 
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 100)
@@ -41,6 +42,7 @@ public class ReservationAllocationPreflight implements ApplicationRunner {
 	private final OrderingReconciliationMarkerRepository markerRepository;
 	private final InventoryRepository inventoryRepository;
 	private final ReservationRepository reservationRepository;
+	private final ReservationLedgerService reservationLedgerService;
 	private final ReservationAllocationPreflightObserver preflightObserver;
 
 	public ReservationAllocationPreflight(
@@ -49,12 +51,14 @@ public class ReservationAllocationPreflight implements ApplicationRunner {
 			OrderingReconciliationMarkerRepository markerRepository,
 			InventoryRepository inventoryRepository,
 			ReservationRepository reservationRepository,
+			ReservationLedgerService reservationLedgerService,
 			ReservationAllocationPreflightObserver preflightObserver) {
 		this.properties = properties;
 		this.activation = activation;
 		this.markerRepository = markerRepository;
 		this.inventoryRepository = inventoryRepository;
 		this.reservationRepository = reservationRepository;
+		this.reservationLedgerService = reservationLedgerService;
 		this.preflightObserver = preflightObserver;
 	}
 
@@ -93,11 +97,14 @@ public class ReservationAllocationPreflight implements ApplicationRunner {
 				&& reservationRepository.countByStatusIn(ALLOCATED_STATUSES) != 0) {
 			throw preflightFailure();
 		}
+		if (reservationLedgerService.hasOrphanConvertedReservations()) {
+			throw preflightFailure();
+		}
 		var inventories =
 				inventoryRepository.findAllByOrderByIdForReconciliation();
 		preflightObserver.afterInventorySnapshotRead();
-		Map<Long, BigDecimal> allocatedByInventory = reservationRepository
-				.sumQuantityByInventoryAndStatusIn(ALLOCATED_STATUSES)
+		Map<Long, BigDecimal> allocatedByInventory = reservationLedgerService
+				.outstandingByInventory()
 				.stream()
 				.collect(Collectors.toMap(
 						InventoryReservationLedgerTotal::inventoryId,

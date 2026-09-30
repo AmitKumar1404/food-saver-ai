@@ -4,9 +4,10 @@
 
 This document records the Customer Ordering architecture, including the
 original broader lifecycle target. The implemented single-Reservation Order
-Management V1 contract is defined by `docs/order-management.md`; where this
-document describes multi-item Orders, Order completion, Order cancellation, or
-Inventory `reserved -> sold`, those sections are future design only.
+Management V1 contract is defined by `docs/order-management.md`, and the
+implemented completion contract is defined by `docs/order-fulfillment.md`.
+Where this document describes multi-item Orders or Order cancellation, those
+sections remain future design only.
 
 The completed Customer increments implement `CustomerStatus`, the `Customer`
 entity, `CustomerRepository`, `CustomerCreateRequest`, `CustomerResponse`, and
@@ -14,8 +15,8 @@ the transactional Customer creation service with focused persistence,
 DTO-validation, service, controller, and duplicate-constraint translation
 tests. `POST /api/v1/customers`, its OpenAPI contract, and the Customer
 duplicate HTTP mapping are implemented. Order and OrderItem persistence,
-single-Reservation conversion, create/get APIs, and their HTTP mappings are
-implemented. Multi-item Orders, completion, cancellation, migrations,
+single-Reservation conversion, create/get/completion APIs, and their HTTP
+mappings are implemented. Multi-item Orders, cancellation, migrations,
 schedulers, security rules, Kafka integration, Redis integration, and AI
 integration remain unimplemented. Reservation
 persistence now includes `ReservationStatus`, the `Reservation` entity,
@@ -136,7 +137,7 @@ results.
 - Database-backed Reservation creation and cancellation.
 - Reservation expiry semantics.
 - Order creation from active Reservations.
-- Order completion and cancellation.
+- Order completion; cancellation remains future design.
 - OrderItem price and quantity snapshots.
 - Inventory allocation transitions.
 - Offer availability and expiry revalidation.
@@ -448,9 +449,9 @@ Reservation, cancel a Reservation, or convert one to an Order.
 customer_orders
 ```
 
-The Java domain name may remain `Order`.
+The Java domain name is `Order`.
 
-Proposed columns:
+Implemented columns:
 
 - `id BIGINT NOT NULL AUTO_INCREMENT`: internal primary key.
 - `public_id CHAR(36) NOT NULL`: immutable public UUID.
@@ -465,17 +466,18 @@ Proposed columns:
 - `version BIGINT NOT NULL`: optimistic-lock version.
 - `confirmed_at TIMESTAMP(6) NOT NULL`: time the Order was created.
 - `completed_at TIMESTAMP(6) NULL`.
-- `cancelled_at TIMESTAMP(6) NULL`.
 - `created_at TIMESTAMP(6) NOT NULL`.
 - `updated_at TIMESTAMP(6) NOT NULL`.
 
-Proposed constraints:
+Implemented constraints:
 
 - Primary key on `id`.
 - `uk_customer_orders_public_id` on `public_id`.
 - `uk_customer_orders_customer_idempotency` on
   `(customer_id, idempotency_key)`.
 - `total_amount > 0`.
+- `CONFIRMED` requires `completed_at IS NULL`; `COMPLETED` requires
+  `completed_at IS NOT NULL`.
 
 Proposed indexes:
 
@@ -574,8 +576,9 @@ EXPIRED
 ```
 
 - `ACTIVE`: quantity is currently held in Inventory reserved quantity.
-- `CONVERTED`: Reservation was consumed by a confirmed Order; the quantity
-  remains reserved until Order completion or cancellation.
+- `CONVERTED`: Reservation was consumed by an Order. It remains `CONVERTED`
+  after completion for audit history, but only confirmed Orders contribute its
+  quantity to outstanding reserved Inventory.
 - `CANCELLED`: held quantity was released.
 - `EXPIRED`: hold elapsed and quantity was released.
 
@@ -584,14 +587,11 @@ EXPIRED
 ```text
 CONFIRMED
 COMPLETED
-CANCELLED
 ```
 
 - `CONFIRMED`: Order exists and its quantities remain reserved.
 - `COMPLETED`: fulfillment completed and quantities moved from reserved to
   sold.
-- `CANCELLED`: Order was cancelled before completion and quantities returned
-  from reserved to available.
 
 No payment status is encoded in `OrderStatus`.
 
@@ -638,20 +638,18 @@ Reservations converted atomically
               |
               v
           CONFIRMED
-          /       \
-         v         v
-   COMPLETED    CANCELLED
+              |
+              v
+          COMPLETED
 ```
 
 Rules:
 
 - Creation from valid active Reservations produces `CONFIRMED`.
 - `CONFIRMED -> COMPLETED` moves Inventory `reserved -> sold`.
-- `CONFIRMED -> CANCELLED` moves Inventory `reserved -> available` and changes
-  the source Reservations from `CONVERTED` to `CANCELLED`.
-- `COMPLETED` and `CANCELLED` are terminal.
-- A completed Order cannot be cancelled in V1 because refunds, returns,
-  disposal, and post-fulfillment adjustment policies are not defined.
+- `COMPLETED` is terminal in V1.
+- Cancellation, refunds, returns, disposal, and post-fulfillment adjustment
+  policies are not implemented.
 - Order lifecycle is not food-safety status.
 
 ## 16. Quantity Authority and Invariants
@@ -812,10 +810,14 @@ While Inventory is write-locked, creation requires both:
 
 ```text
 prepared = available + reserved + sold
-reserved = SUM(ACTIVE + CONVERTED Reservation quantity)
+reserved =
+    SUM(ACTIVE Reservation quantity)
+    + SUM(CONVERTED Reservation quantity linked to CONFIRMED Orders)
 ```
 
-Expired active holds are released atomically before Offer allocation is
+Converted Reservations linked to completed Orders are excluded from
+outstanding reserved quantity, while orphan converted Reservations fail
+closed. Expired active holds are released atomically before Offer allocation is
 recalculated. Successful creation moves Inventory quantity from available to
 reserved, persists the new active Reservation with `saveAndFlush`, and verifies
 both invariants again. Pricing, currency, and expiry remain server-derived.
@@ -839,13 +841,13 @@ default is never weakened for development or tests.
 The durable `ordering_reconciliation_markers` row is keyed by the exact
 allocation release identifier. Its state moves from `RECONCILED_BASELINE` to
 `ACTIVATED` only after the `REPEATABLE_READ` startup preflight confirms there
-are no legacy `ACTIVE` or `CONVERTED` Reservations, every Inventory has
-`reservedQuantity = 0`, and both the Inventory equation and Reservation ledger
-are valid. The marker transition and preflight commit before an in-process
-activation guard permits allocation traffic. Missing, wrong-release, or
-invalid markers fail startup; requests also fail closed while preflight is
+are no legacy rows requiring classification, every Inventory and the
+completion-aware Reservation ledger reconcile, and there are no orphan
+`CONVERTED` Reservations. The marker transition and preflight commit before an
+in-process activation guard permits ordering traffic. Missing, wrong-release,
+or invalid markers fail startup; requests also fail closed while preflight is
 incomplete. On later restarts, the activated release marker is still required
-and current Inventory and Reservation-ledger invariants are revalidated.
+and current Inventory and completion-aware ledger invariants are revalidated.
 Preflight uses its own non-locking `REPEATABLE_READ` snapshot and one grouped
 Reservation-ledger query, so Inventory values and Reservation sums come from
 one committed snapshot without globally blocking allocation writes. Runtime
@@ -918,8 +920,8 @@ cancel request observes the terminal state and must not release quantity again.
 
 Expiry has precedence over `SOLD_OUT` for marketplace lifecycle. Completion
 after Offer expiry may still move valid confirmed allocation from reserved to
-sold, but it does not change an expired or logically expired Offer to
-`SOLD_OUT`. A future Offer lifecycle processor may persist `EXPIRED`.
+sold, but completion never changes Offer status. A future Offer lifecycle
+processor may persist `EXPIRED`.
 
 ## 19. Pricing and Currency
 
@@ -1049,26 +1051,35 @@ Inventory quantity is not changed because it is already reserved.
 
 ### 20.4 Complete Order transaction
 
-One transaction must:
+The implemented customer-owned endpoint delegates to one separately proxied
+`READ_COMMITTED` transaction:
 
-1. Resolve Order through Restaurant ownership.
-2. Lock all affected Inventory rows in ascending internal-ID order.
-3. Lock all affected Offer rows in ascending internal-ID order.
-4. Lock source Reservation rows in ascending internal-ID order.
-5. Lock the Order row.
-6. Require Order status `CONFIRMED`.
-7. Validate reserved quantities are sufficient.
-8. Move each Inventory `reserved -> sold`.
-9. Mark Order `COMPLETED` and set `completedAt`.
-10. Query completed OrderItems for each locked Offer. If their total quantity
-    is numerically equal to `Offer.offeredQuantity`, transition Offer to
-    `SOLD_OUT` only when the Offer remains logically open (`ACTIVE` and
-    `expiresAt > transactionTime`).
-11. Commit atomically.
+1. Lock Customer `PESSIMISTIC_WRITE`.
+2. Resolve immutable target IDs without locking.
+3. Lock Order `PESSIMISTIC_WRITE`.
+4. Return an already completed Order unchanged after persisted response
+   relationship validation.
+5. Lock Restaurant and Product `PESSIMISTIC_READ`.
+6. Lock Inventory `PESSIMISTIC_WRITE`.
+7. Lock Offers and Reservations `PESSIMISTIC_WRITE`, each in ascending
+   internal-ID order.
+8. Capture one server-generated microsecond-normalized timestamp.
+9. Revalidate all persisted relationships, snapshots, lifecycle state,
+   Inventory equation, completion-aware ledger, and absence of orphan
+   converted Reservations.
+10. Move Inventory `reserved -> sold`, preserving prepared, available, and
+    status.
+11. Mark Order `COMPLETED`, setting `completedAt == updatedAt`.
+12. Flush and revalidate deltas, persistence, and both invariants.
+13. Commit atomically.
+
+Reservation remains `CONVERTED`. Completion does not reprice the Order or
+change Offer or Inventory status.
 
 ### 20.5 Cancel Order transaction
 
-One transaction must:
+Order cancellation is not implemented. A future design would need one
+transaction that:
 
 1. Resolve ownership-scoped Order.
 2. Acquire the same deterministic locks.
@@ -1078,50 +1089,48 @@ One transaction must:
 6. Mark Order `CANCELLED` and set `cancelledAt`.
 7. Commit atomically.
 
-No partial item completion or cancellation is allowed in V1.
+No partial item completion is allowed in V1.
 
-Cancellation, expiry, and rollback reconciliation must remain possible even
+Expiry and rollback reconciliation must remain possible even
 when Customer, Restaurant, Product, Inventory, or Offer lifecycle state later
 becomes inactive. Current lifecycle checks block new allocation; they must not
-trap quantity in `reservedQuantity`. Completion policy for an already confirmed
-Order must be explicitly authorized by the future fulfillment contract, but it
-must never bypass quantity reconciliation.
+trap quantity in `reservedQuantity`. Completion of an already confirmed Order
+is authorized by the narrow fulfillment accounting contract and never bypasses
+quantity reconciliation.
 
-V1 defines the cancellation cutoff as the atomic
-`CONFIRMED -> COMPLETED` transition: a Customer may cancel while the Order is
-still `CONFIRMED`; after completion, cancellation is rejected. Concurrent
-completion and cancellation lock the same rows, and whichever valid transition
-commits first determines the terminal state.
+Any future cancellation design must define its cutoff and concurrency behavior
+against the atomic `CONFIRMED -> COMPLETED` transition before implementation.
 
-The Restaurant completion endpoint is a domain/API design only and must not be
-exposed in a production deployment until the future security contract can
-authenticate and authorize a Restaurant actor.
+The implemented completion endpoint is Customer-scoped by public UUID. It must
+not be exposed to an untrusted production network until a future security
+contract authenticates and authorizes the actor.
 
 ## 21. Locking Strategy
 
 ### 21.1 Canonical lock order
 
-Every Customer Ordering mutation must use one canonical lock order:
+Order completion uses this canonical lock order:
 
 ```text
 Customer
-    -> Restaurant rows ordered by internal id
-        -> Product rows ordered by internal id
-            -> Inventory rows ordered by internal id
-                -> Offer rows ordered by internal id
-                    -> Reservation rows ordered by internal id
-                        -> Order
+    -> Order
+        -> Restaurant
+            -> Product
+                -> Inventory
+                    -> Offers ordered by internal ID
+                        -> Reservations ordered by internal ID
 ```
 
-Inventory must be locked before Offer because implemented Offer creation
-already uses:
+Allocation and conversion have no pre-existing Order to lock, so they retain
+their compatible prefix:
 
 ```text
-Inventory PESSIMISTIC_WRITE
-    -> Offer current/locking conflict reads
+Customer -> Restaurant -> Product -> Inventory -> Offers -> Reservations
 ```
 
-Using the same order avoids introducing a reverse Offer-to-Inventory deadlock.
+All workflows lock Inventory before Offer and Reservation. Completion locks its
+Order immediately after Customer, before entering that shared suffix; no
+workflow acquires Order after any suffix lock.
 
 Customer locking may be used as a current lifecycle read and per-Customer
 serialization point. It does not replace authentication.
@@ -1137,10 +1146,10 @@ Offer-to-Product lock order.
 Use `PESSIMISTIC_WRITE` for:
 
 - Customer rows that serialize Customer-scoped idempotency;
+- Order rows undergoing completion;
 - Inventory rows whose quantities will change;
 - Offer rows whose allocation capacity is being checked;
-- Reservation rows undergoing transition; and
-- Order rows undergoing completion or cancellation.
+- Reservation rows undergoing transition or reconciliation.
 
 Reservation allocation uses the canonical order:
 
@@ -1520,19 +1529,19 @@ certification.
 
 ### 26.3 Order
 
-The single-Reservation V1 create and customer-owned read endpoints are
+The single-Reservation V1 create, customer-owned read, and completion endpoints are
 implemented:
 
 ```http
 POST /api/v1/customers/{customerPublicId}/orders
 GET  /api/v1/customers/{customerPublicId}/orders/{orderPublicId}
+POST /api/v1/customers/{customerPublicId}/orders/{orderPublicId}/complete
 ```
 
-Cancellation and completion remain future design:
+Cancellation remains future design:
 
 ```http
 POST /api/v1/customers/{customerPublicId}/orders/{orderPublicId}/cancel
-POST /api/v1/restaurants/{restaurantPublicId}/orders/{orderPublicId}/complete
 ```
 
 Create headers:
@@ -1552,9 +1561,11 @@ The response contains:
 - lifecycle timestamps; and
 - OrderItems containing only public UUIDs and immutable snapshots.
 
-New creates and successful same-request idempotent replays return `201 Created`
-with the original persisted representation. `docs/order-management.md` is the
-authoritative contract for this implemented subset.
+New creates and successful same-request idempotent creation replays return
+`201 Created`. Completion takes no body, timestamp, or idempotency key and
+returns `200 OK`; a completed replay returns the original persisted completed
+representation without moving Inventory again. `docs/order-management.md` and
+`docs/order-fulfillment.md` are the authoritative contracts.
 
 ## 27. Error Handling
 
@@ -1816,7 +1827,7 @@ Incremental steps:
 9. Reservation cancellation and expiry service.
 10. OrderStatus, Order, and OrderItem persistence.
 11. Order creation from Reservations.
-12. Order completion and cancellation.
+12. Order completion. (Completed)
 13. Remaining global exception mappings and OpenAPI.
 14. Unit, controller, and real-MySQL integration tests.
 15. Continue Customer Ordering interview material for each increment.
@@ -2021,10 +2032,9 @@ Customer Ordering V1 adopts these decisions:
 17. A database-backed expiry processor is required before production so
     abandoned holds are eventually released.
 18. Customer Ordering does not automatically transition Inventory status.
-19. A logically open Offer becomes `SOLD_OUT` only when completed OrderItem
-    quantity reaches the immutable offered quantity; expiry takes precedence.
-20. Customer cancellation is allowed only while Order remains `CONFIRMED`;
-    completion and cancellation are mutually exclusive locked transitions.
+19. Order completion does not change Offer or Inventory status.
+20. Cancellation is not implemented; a future contract must coordinate it
+    with the locked completion transition.
 21. Production endpoint exposure waits for the future authentication and
     authorization contract.
 22. V1 uses one globally configured Reservation TTL.

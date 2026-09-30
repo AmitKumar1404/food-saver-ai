@@ -87,15 +87,83 @@ public interface ReservationRepository extends JpaRepository<Reservation, Long> 
 			@Param("statuses") Collection<ReservationStatus> statuses);
 
 	@Query("""
+			select coalesce(sum(reservation.quantity), 0)
+			from Reservation reservation
+			where reservation.inventory.id = :inventoryId
+			  and (
+				reservation.status =
+					com.foodsaver.enums.ReservationStatus.ACTIVE
+				or (
+					reservation.status =
+						com.foodsaver.enums.ReservationStatus.CONVERTED
+					and exists (
+						select item.id
+						from OrderItem item
+						where item.reservation.id = reservation.id
+						  and item.order.status =
+							com.foodsaver.enums.OrderStatus.CONFIRMED
+					)
+				)
+			  )
+			""")
+	BigDecimal sumOutstandingQuantityByInventoryId(
+			@Param("inventoryId") Long inventoryId);
+
+	@Query("""
 			select new com.foodsaver.repository.projection.InventoryReservationLedgerTotal(
 				reservation.inventory.id,
 				sum(reservation.quantity))
 			from Reservation reservation
-			where reservation.status in :statuses
+			where reservation.status =
+					com.foodsaver.enums.ReservationStatus.ACTIVE
+			   or (
+					reservation.status =
+						com.foodsaver.enums.ReservationStatus.CONVERTED
+					and exists (
+						select item.id
+						from OrderItem item
+						where item.reservation.id = reservation.id
+						  and item.order.status =
+							com.foodsaver.enums.OrderStatus.CONFIRMED
+					)
+			   )
 			group by reservation.inventory.id
 			""")
-	List<InventoryReservationLedgerTotal> sumQuantityByInventoryAndStatusIn(
-			@Param("statuses") Collection<ReservationStatus> statuses);
+	List<InventoryReservationLedgerTotal> sumOutstandingQuantityByInventory();
+
+	@Query("""
+			select count(reservation)
+			from Reservation reservation
+			where reservation.status =
+					com.foodsaver.enums.ReservationStatus.CONVERTED
+			  and not exists (
+				select item.id
+				from OrderItem item
+				where item.reservation.id = reservation.id
+				  and item.order.status in (
+					com.foodsaver.enums.OrderStatus.CONFIRMED,
+					com.foodsaver.enums.OrderStatus.COMPLETED)
+			  )
+			""")
+	long countOrphanConvertedReservations();
+
+	@Query("""
+			select count(reservation)
+			from Reservation reservation
+			where reservation.inventory.id = :inventoryId
+			  and reservation.status =
+					com.foodsaver.enums.ReservationStatus.CONVERTED
+			  and not exists (
+				select item.id
+				from OrderItem item
+				where item.reservation.id = reservation.id
+				  and item.order.status in (
+					com.foodsaver.enums.OrderStatus.CONFIRMED,
+					com.foodsaver.enums.OrderStatus.COMPLETED)
+			  )
+			""")
+	long countOrphanConvertedReservationsByInventoryId(
+			@Param("inventoryId") Long inventoryId);
 
 	@Query("""
 			select coalesce(sum(reservation.quantity), 0)

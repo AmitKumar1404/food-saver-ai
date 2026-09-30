@@ -33,6 +33,7 @@ class OrderResponseMapper {
 		response.setTotalAmount(order.getTotalAmount());
 		response.setCurrencyCode(order.getCurrencyCode());
 		response.setConfirmedAt(order.getConfirmedAt());
+		response.setCompletedAt(order.getCompletedAt());
 		response.setCreatedAt(order.getCreatedAt());
 		response.setUpdatedAt(order.getUpdatedAt());
 		response.setItem(itemResponse);

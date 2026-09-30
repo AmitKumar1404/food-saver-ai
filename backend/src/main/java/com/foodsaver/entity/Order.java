@@ -22,6 +22,7 @@ import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
 import jakarta.persistence.Version;
@@ -32,7 +33,10 @@ import lombok.NoArgsConstructor;
 @Entity
 @Check(
 		name = "chk_customer_orders_basic_invariants",
-		constraints = "total_amount > 0")
+		constraints =
+				"total_amount > 0"
+						+ " and ((status = 'CONFIRMED' and completed_at is null)"
+						+ " or (status = 'COMPLETED' and completed_at is not null))")
 @Table(
 		name = "customer_orders",
 		uniqueConstraints = {
@@ -81,7 +85,6 @@ public class Order {
 	@Column(
 			name = "status",
 			nullable = false,
-			updatable = false,
 			length = 32,
 			columnDefinition = "VARCHAR(32)")
 	private OrderStatus status = OrderStatus.CONFIRMED;
@@ -126,6 +129,9 @@ public class Order {
 			columnDefinition = "TIMESTAMP(6)")
 	private Instant confirmedAt;
 
+	@Column(name = "completed_at", columnDefinition = "TIMESTAMP(6)")
+	private Instant completedAt;
+
 	@Column(
 			name = "created_at",
 			nullable = false,
@@ -163,6 +169,20 @@ public class Order {
 		this.updatedAt = normalized;
 	}
 
+	public void complete(Instant transactionTime) {
+		if (status != OrderStatus.CONFIRMED || completedAt != null) {
+			throw new IllegalStateException("Order cannot be completed");
+		}
+		Instant normalized = Reservation.normalizeTimestamp(transactionTime);
+		if (normalized == null) {
+			throw new IllegalArgumentException(
+					"Order completion timestamp is required");
+		}
+		status = OrderStatus.COMPLETED;
+		completedAt = normalized;
+		updatedAt = normalized;
+	}
+
 	@PrePersist
 	void initializeSystemFields() {
 		if (publicId == null) {
@@ -181,5 +201,14 @@ public class Order {
 		updatedAt = updatedAt == null
 				? createdAt
 				: Reservation.normalizeTimestamp(updatedAt);
+		completedAt = Reservation.normalizeTimestamp(completedAt);
+	}
+
+	@PreUpdate
+	void normalizeTimestamps() {
+		confirmedAt = Reservation.normalizeTimestamp(confirmedAt);
+		completedAt = Reservation.normalizeTimestamp(completedAt);
+		createdAt = Reservation.normalizeTimestamp(createdAt);
+		updatedAt = Reservation.normalizeTimestamp(updatedAt);
 	}
 }

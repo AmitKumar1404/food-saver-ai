@@ -114,6 +114,41 @@ public class OrderController {
 				orderService.getOrder(customerPublicId, orderPublicId));
 	}
 
+	@PostMapping("/{orderPublicId}/complete")
+	@Operation(summary = "Complete one confirmed Order")
+	@ApiResponses({
+			@ApiResponse(
+					responseCode = "200",
+					description = "Order completed or replayed successfully",
+					content = @Content(
+							mediaType = "application/json",
+							schema = @Schema(implementation = OrderResponse.class))),
+			@ApiResponse(
+					responseCode = "400",
+					description = "Invalid public UUID",
+					content = @Content(
+							mediaType = "application/json",
+							schema = @Schema(implementation = ErrorResponse.class))),
+			@ApiResponse(
+					responseCode = "404",
+					description = "Customer or customer-owned Order not found",
+					content = @Content(
+							mediaType = "application/json",
+							schema = @Schema(implementation = ErrorResponse.class))),
+			@ApiResponse(
+					responseCode = "409",
+					description = "Order lifecycle, ledger, or concurrency conflict",
+					content = @Content(
+							mediaType = "application/json",
+							schema = @Schema(implementation = ErrorResponse.class)))
+	})
+	public ResponseEntity<OrderResponse> completeOrder(
+			@PathVariable("customerPublicId") UUID customerPublicId,
+			@PathVariable("orderPublicId") UUID orderPublicId) {
+		return ResponseEntity.ok(
+				orderService.completeOrder(customerPublicId, orderPublicId));
+	}
+
 	private void validateIdempotencyKey(String idempotencyKey) {
 		if (idempotencyKey == null || idempotencyKey.isBlank()) {
 			throw new InvalidIdempotencyKeyException(

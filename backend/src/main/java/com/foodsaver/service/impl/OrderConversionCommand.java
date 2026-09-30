@@ -5,7 +5,6 @@ import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
-import java.util.Set;
 
 import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -38,6 +37,7 @@ import com.foodsaver.repository.ProductRepository;
 import com.foodsaver.repository.ReservationRepository;
 import com.foodsaver.repository.RestaurantRepository;
 import com.foodsaver.repository.projection.OrderConversionTarget;
+import com.foodsaver.service.ReservationLedgerService;
 
 @Service
 class OrderConversionCommand {
@@ -46,15 +46,13 @@ class OrderConversionCommand {
 			"uk_customer_orders_customer_idempotency";
 	private static final String RESERVATION_CONSTRAINT =
 			"uk_order_items_reservation";
-	private static final Set<ReservationStatus> ALLOCATED_STATUSES =
-			Set.of(ReservationStatus.ACTIVE, ReservationStatus.CONVERTED);
-
 	private final CustomerRepository customerRepository;
 	private final RestaurantRepository restaurantRepository;
 	private final ProductRepository productRepository;
 	private final InventoryRepository inventoryRepository;
 	private final OfferRepository offerRepository;
 	private final ReservationRepository reservationRepository;
+	private final ReservationLedgerService reservationLedgerService;
 	private final OrderRepository orderRepository;
 	private final OrderItemRepository orderItemRepository;
 	private final OrderResponseMapper responseMapper;
@@ -67,6 +65,7 @@ class OrderConversionCommand {
 			InventoryRepository inventoryRepository,
 			OfferRepository offerRepository,
 			ReservationRepository reservationRepository,
+			ReservationLedgerService reservationLedgerService,
 			OrderRepository orderRepository,
 			OrderItemRepository orderItemRepository,
 			OrderResponseMapper responseMapper,
@@ -77,6 +76,7 @@ class OrderConversionCommand {
 		this.inventoryRepository = inventoryRepository;
 		this.offerRepository = offerRepository;
 		this.reservationRepository = reservationRepository;
+		this.reservationLedgerService = reservationLedgerService;
 		this.orderRepository = orderRepository;
 		this.orderItemRepository = orderItemRepository;
 		this.responseMapper = responseMapper;
@@ -316,10 +316,12 @@ class OrderConversionCommand {
 	}
 
 	private void verifyReservationLedger(Inventory inventory) {
-		BigDecimal allocated = reservationRepository
-				.sumQuantityByInventoryIdAndStatusIn(
-						inventory.getId(),
-						ALLOCATED_STATUSES);
+		if (reservationLedgerService.hasOrphanConvertedReservations(
+				inventory.getId())) {
+			throw conversionConflict();
+		}
+		BigDecimal allocated =
+				reservationLedgerService.outstandingQuantity(inventory.getId());
 		if (allocated == null
 				|| inventory.getReservedQuantity().compareTo(allocated) != 0) {
 			throw conversionConflict();

@@ -4,8 +4,10 @@
 
 Order Management V1 converts exactly one valid `ACTIVE` Reservation into one
 `CONFIRMED` Order containing exactly one OrderItem. It does not implement
-payment, refund, delivery, cancellation, completion, fulfillment, Kafka,
-Redis, AI/RAG, multi-item carts, or partial fulfillment.
+payment, refund, delivery, cancellation, Kafka, Redis, AI/RAG, multi-item
+carts, or partial fulfillment. Order Completion/Fulfillment V1 is implemented
+as the narrow `CONFIRMED -> COMPLETED` accounting transition documented in
+`docs/order-fulfillment.md`.
 
 An Order is the durable confirmation of a purchase intent. A Reservation is
 the quantity and price hold from which that Order is created. Conversion
@@ -14,10 +16,12 @@ allocation.
 
 ## Persistence model
 
-`customer_orders` stores the public UUID, Customer, Restaurant, `CONFIRMED`
-status, total and currency snapshots, customer-scoped idempotency key, request
-hash, microsecond timestamps, and optimistic-lock version. The database
-uniquely protects the public UUID and `(customer_id, idempotency_key)`.
+`customer_orders` stores the public UUID, Customer, Restaurant, status, total
+and currency snapshots, customer-scoped idempotency key, request hash,
+microsecond timestamps (including nullable `completed_at`), and
+optimistic-lock version. The database uniquely protects the public UUID and
+`(customer_id, idempotency_key)`. A lifecycle check requires `completed_at` to
+be null for `CONFIRMED` and non-null for `COMPLETED`.
 
 `order_items` stores the public UUID, parent Order, source Reservation, Offer,
 Product, Inventory, product-name snapshot, quantity, unit-price, line-total,
@@ -64,14 +68,31 @@ after conversion:
 
 ```text
 prepared = available + reserved + sold
-reserved = SUM(ACTIVE + CONVERTED Reservation.quantity)
+reserved =
+    SUM(ACTIVE Reservation.quantity)
+    + SUM(CONVERTED Reservation.quantity linked to CONFIRMED Orders)
 ```
 
-Because `CONVERTED` remains in the Reservation ledger, decrementing reserved
-quantity during Order creation would corrupt the invariant. A future Order
-Completion/Fulfillment module owns the eventual `reserved -> sold` movement.
-V1 performs no automatic quantity repair; any mismatch fails closed with a
-controlled conflict and no business mutation.
+`CONVERTED` Reservations linked to `COMPLETED` Orders no longer represent
+outstanding reserved Inventory. Orphan `CONVERTED` Reservations fail closed.
+Order creation must not decrement reserved quantity; Order Completion owns the
+eventual `reserved -> sold` movement. No workflow automatically repairs
+quantity mismatches.
+
+## Completion boundary
+
+`POST /api/v1/customers/{customerPublicId}/orders/{orderPublicId}/complete`
+has no body, client timestamp, or idempotency header. The separately proxied
+`READ_COMMITTED` command locks Customer, Order, Restaurant, Product,
+Inventory, Offers by ascending internal ID, then Reservations by ascending
+internal ID. It validates persisted relationship and pricing snapshots, moves
+Inventory `reserved -> sold`, and sets Order status, `completedAt`, and
+`updatedAt` from one server-generated microsecond-normalized timestamp.
+
+Reservation remains `CONVERTED`; Inventory available, prepared, and status
+remain unchanged. Replaying a completed Order returns its persisted response
+without another Inventory mutation. See `docs/order-fulfillment.md` for the
+complete contract.
 
 ## Snapshot pricing
 
@@ -116,3 +137,7 @@ ledger quantities.
 Order conversion uses the existing fail-closed allocation activation gate.
 Production reconciliation remains deployment/operations work; this document
 does not claim that a production baseline has been reconciled or activated.
+Production rollout also requires an explicit schema migration for
+`COMPLETED`, `completed_at TIMESTAMP(6)`, and the lifecycle check, followed by
+completion-aware ledger reconciliation. Hibernate `ddl-auto=update` is not a
+production migration strategy.

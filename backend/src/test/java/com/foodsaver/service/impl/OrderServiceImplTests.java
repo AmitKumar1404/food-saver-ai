@@ -21,6 +21,7 @@ import org.springframework.dao.CannotAcquireLockException;
 import com.foodsaver.config.ReservationAllocationActivation;
 import com.foodsaver.dto.request.OrderCreateRequest;
 import com.foodsaver.dto.response.OrderResponse;
+import com.foodsaver.exception.OrderCompletionConflictException;
 import com.foodsaver.exception.OrderConversionConflictException;
 import com.foodsaver.exception.OrderIdempotencyRaceException;
 import com.foodsaver.exception.ReservationAllocationConflictException;
@@ -36,6 +37,8 @@ class OrderServiceImplTests {
 
 	@Mock
 	private OrderConversionCommand conversionCommand;
+	@Mock
+	private OrderCompletionCommand completionCommand;
 	@Mock
 	private OrderReplayService replayService;
 	@Mock
@@ -55,6 +58,7 @@ class OrderServiceImplTests {
 		service = new OrderServiceImpl(
 				activation,
 				conversionCommand,
+				completionCommand,
 				replayService,
 				orderRepository,
 				orderItemRepository,
@@ -82,10 +86,33 @@ class OrderServiceImplTests {
 	}
 
 	@Test
+	void delegatesCompletionAndReturnsResponse() {
+		UUID orderPublicId = UUID.randomUUID();
+		OrderResponse expected = new OrderResponse();
+		when(completionCommand.complete(any())).thenReturn(expected);
+
+		assertSame(
+				expected,
+				service.completeOrder(CUSTOMER_ID, orderPublicId));
+	}
+
+	@Test
+	void translatesCompletionLockFailure() {
+		UUID orderPublicId = UUID.randomUUID();
+		when(completionCommand.complete(any()))
+				.thenThrow(new CannotAcquireLockException("timeout"));
+
+		assertThrows(
+				OrderCompletionConflictException.class,
+				() -> service.completeOrder(CUSTOMER_ID, orderPublicId));
+	}
+
+	@Test
 	void failsClosedWhenReservationAllocationIsNotActivated() {
 		OrderServiceImpl inactiveService = new OrderServiceImpl(
 				new ReservationAllocationActivation(),
 				conversionCommand,
+				completionCommand,
 				replayService,
 				orderRepository,
 				orderItemRepository,

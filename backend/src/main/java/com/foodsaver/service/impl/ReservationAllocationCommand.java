@@ -47,6 +47,7 @@ import com.foodsaver.repository.ReservationRepository;
 import com.foodsaver.repository.RestaurantRepository;
 import com.foodsaver.repository.projection.OfferAllocationTarget;
 import com.foodsaver.repository.projection.ReservationAllocationTarget;
+import com.foodsaver.service.ReservationLedgerService;
 
 @Service
 class ReservationAllocationCommand {
@@ -65,6 +66,7 @@ class ReservationAllocationCommand {
 	private final InventoryRepository inventoryRepository;
 	private final OfferRepository offerRepository;
 	private final ReservationRepository reservationRepository;
+	private final ReservationLedgerService reservationLedgerService;
 	private final ReservationProperties reservationProperties;
 	private final ReservationResponseMapper responseMapper;
 	private final ReservationAllocationTransactionObserver transactionObserver;
@@ -76,6 +78,7 @@ class ReservationAllocationCommand {
 			InventoryRepository inventoryRepository,
 			OfferRepository offerRepository,
 			ReservationRepository reservationRepository,
+			ReservationLedgerService reservationLedgerService,
 			ReservationProperties reservationProperties,
 			ReservationResponseMapper responseMapper,
 			ReservationAllocationTransactionObserver transactionObserver) {
@@ -85,6 +88,7 @@ class ReservationAllocationCommand {
 		this.inventoryRepository = inventoryRepository;
 		this.offerRepository = offerRepository;
 		this.reservationRepository = reservationRepository;
+		this.reservationLedgerService = reservationLedgerService;
 		this.reservationProperties = reservationProperties;
 		this.responseMapper = responseMapper;
 		this.transactionObserver = transactionObserver;
@@ -426,10 +430,12 @@ class ReservationAllocationCommand {
 	}
 
 	private void verifyReservationLedger(Inventory inventory) {
-		BigDecimal allocated = reservationRepository
-				.sumQuantityByInventoryIdAndStatusIn(
-						inventory.getId(),
-						ALLOCATED_STATUSES);
+		if (reservationLedgerService.hasOrphanConvertedReservations(
+				inventory.getId())) {
+			throw allocationStateConflict();
+		}
+		BigDecimal allocated =
+				reservationLedgerService.outstandingQuantity(inventory.getId());
 		if (allocated == null
 				|| inventory.getReservedQuantity().compareTo(allocated) != 0) {
 			LOGGER.warn("Reservation allocation rejected: Reservation ledger mismatch");
