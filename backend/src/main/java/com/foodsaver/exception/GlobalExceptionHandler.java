@@ -304,6 +304,20 @@ public class GlobalExceptionHandler {
 		return ResponseEntity.status(HttpStatus.CONFLICT).body(response);
 	}
 
+	@ExceptionHandler(InvalidAiResponseException.class)
+	public ResponseEntity<ErrorResponse> handleInvalidAiResponse(
+			InvalidAiResponseException exception,
+			HttpServletRequest request) {
+		ErrorResponse response = new ErrorResponse(
+				Instant.now(),
+				HttpStatus.BAD_GATEWAY.value(),
+				exception.getMessage(),
+				request.getRequestURI(),
+				Map.of());
+
+		return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(response);
+	}
+
 	@ExceptionHandler(OrderValidationException.class)
 	public ResponseEntity<ErrorResponse> handleOrderValidation(
 			OrderValidationException exception,
